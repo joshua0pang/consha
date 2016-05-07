@@ -119,12 +119,12 @@ lemma Correctness(expr: Expr)
   }
 }
 
-method Main() {
-  var prog: Expr := Add(V(Num(1)), V(Num(2)));
+method Run(prog: Expr) {
   var t: Option<Type> := TypeCheck(prog); // Some(NumT)
   if t.None? {
-    print "type error";
+    print "Type error!\n";
   } else {
+    print "Type checking succesful.\nEvaluating...\n";
     var res: Option<Value> := Eval(prog);
     assert t.Some?;
     Correctness(prog);
