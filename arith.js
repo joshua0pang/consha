@@ -21,8 +21,10 @@ const kw = (s) => string(s).skip(optWhitespace);
 const trueP = kw('true').map(_ => "V(Bool(true))");
 const falseP = kw('false').map(_ => "V(Bool(false))");
 const numP = regex(/0|[1-9][0-9]*/).skip(optWhitespace).map(s => `V(Num(${s}))`);
-const addP = lazy(() => seq(numP.skip(kw('+')), addP).map(([a,b]) => `Add(${a},${b})`)
-                       .or(numP));
+const valP = trueP.or(falseP).or(numP);
+
+const addP = lazy(() => seq(valP.skip(kw('+')), addP).map(([a,b]) => `Add(${a},${b})`)
+                       .or(valP));
 const eqP = seq(addP.skip(kw('=')), addP).map(([a,b]) => `Eq(${a},${b})`)
            .or(addP);
 const exprP = lazy(() => seq(kw('if').then(eqP),
