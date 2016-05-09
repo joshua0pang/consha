@@ -1,0 +1,2 @@
+var x: Num = 12;
+var y: Num = x + 5;
