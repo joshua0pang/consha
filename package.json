@@ -4,7 +4,8 @@
   "description": "Typed concurrent language with shared references",
   "main": "ascend.js",
   "scripts": {
-    "arith": "node --harmony --harmony_destructuring --use_strict arith.js"
+    "arith": "node --harmony --harmony_destructuring --use_strict arith.js",
+    "while": "node --harmony --harmony_destructuring --use_strict while.js"
   },
   "author": "Christopher Schuster <cs@livoris.net>",
   "license": "ISC",

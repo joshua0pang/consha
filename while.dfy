@@ -2,7 +2,6 @@ datatype Option<T> = None | Some(val: T)
 
 datatype Type = NumT
               | BoolT
-datatype LType = T(t: Type) | Invalid
 datatype Value = Num(nval: int)
               | Bool(bval: bool)
 datatype Expr = V(val: Value)
@@ -11,204 +10,260 @@ datatype Expr = V(val: Value)
               | Eq(leftE: Expr, rightE: Expr)
 datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | If(cond: Expr, the: Stmt, els: Stmt)
-              | While(wcond: Expr, wbody: Stmt)
+              | CleanUp(g: Gamma, refs: Stmt, decls: Stmt)
+              /* | While(wcond: Expr, wbody: Stmt) */
               | Seq(s1: Stmt, s2: Stmt)
               | Skip
 
-type Gamma = map<string, LType>
+type Gamma = map<string, Type>
 
-function method TypeJoin(t1: LType, t2: LType): LType
+function method GammaJoin(g1: Gamma, g2: Gamma): Gamma
+ensures GammaExtends(GammaJoin(g1, g2), g1);
+ensures GammaExtends(GammaJoin(g1, g2), g2);
 {
-  if t1 != t2 then Invalid else t1
+  map x | x in g1 && x in g2 && g1[x] == g2[x] :: g1[x]
 }
 
-function method GammaJoin(g1: Gamma, g2: Gamma): Gamma {
+function method GammaUnion(g1: Gamma, g2: Gamma): Gamma
+ensures GammaExtends(g2, GammaUnion(g1, g2));
+ensures forall x :: x in GammaUnion(g1, g2) ==> x in g1 || x in g2;
+{
   var g1k: set<string> := (set x | x in g1);
   var g2k: set<string> := (set x | x in g2);
-  (map x | x in g1k + g2k ::
-    if x in g1k && x in g2k then
-      TypeJoin(g1[x], g2[x])
-    else
-      Invalid)
+  map x | x in g1k + g2k :: if x in g2k then g2[x] else g1[x]
 }
 
-function method GammaUnion(g1: Gamma, g2: Gamma): Gamma {
-  var g1k: set<string> := (set x | x in g1);
-  var g2k: set<string> := (set x | x in g2);
-  (map x | x in g1k + g2k ::
-    if x in g1k && x in g2k then
-      TypeJoin(g1[x], g2[x])
-    else if x in g2k then
-      g2[x]
-    else
-      g1[x])
-}
-
-predicate GammaExtends(gamma1: Gamma, gamma2: Gamma) {
-  forall x :: x in gamma1 ==> x in gamma2 && (gamma2[x] == Invalid || gamma1[x] == gamma2[x])
-}
-
-predicate GammaExtendsInv(gamma1: Gamma, gamma2: Gamma) {
-  (forall x :: x in gamma1 ==> x in gamma2) &&
-  forall x :: x in gamma2 ==> x in gamma1 && (gamma2[x] == Invalid || gamma1[x] == gamma2[x])
-}
-
-predicate GammaExtendsAdd(gamma1: Gamma, gamma2: Gamma) {
+predicate GammaExtends(gamma1: Gamma, gamma2: Gamma)
+ensures GammaExtends(gamma1, gamma2) ==> forall x :: x in gamma1 ==> x in gamma2;
+{
   forall x :: x in gamma1 ==> x in gamma2 && gamma1[x] == gamma2[x]
 }
 
+predicate method MoveType(t: Type) {
+  false
+}
+
 predicate GammaDeclarationsE(g: Gamma, expr: Expr) {
-  forall x ::x in ReferencedVarsE(expr) ==> x in g && !g[x].Invalid?
+  forall x :: x in ReferencedVarsE(expr) ==> x in g
 }
 
 predicate GammaDeclarationsS(g: Gamma, stmt: Stmt)
-requires NoDuplicateDeclarations(stmt);
 {
-  forall x ::x in ReferencedVarsS(stmt) ==> x in g && !g[x].Invalid?
+  forall x :: x in ReferencedVarsS(stmt) ==> x in g
 }
 
-predicate NoDuplicateDeclarations(stmt: Stmt)
+function method DeclaredVars(stmt: Stmt): Gamma
 decreases stmt;
 {
   match stmt {
-    case VarDecl(x, vtype, vinit) => true
-    case If(con, the, els) => (
-      NoDuplicateDeclarations(the) &&
-      NoDuplicateDeclarations(els)
-    )
-    case While(con, body) => NoDuplicateDeclarations(body)
-    case Seq(s1, s2) => (
-      NoDuplicateDeclarations(s1) &&
-      NoDuplicateDeclarations(s2) &&
-      DeclaredVars(s1) !! DeclaredVars(s2)
-    )
-    case Skip => true
-  }
-}
-
-function DeclaredVars(stmt: Stmt): Gamma
-decreases stmt;
-{
-  match stmt {
-    case VarDecl(x, vtype, vinit) => map[x := T(vtype)]
+    case VarDecl(x, vtype, vinit) => map[x := vtype]
     case If(con, the, els) => GammaUnion(DeclaredVars(the), DeclaredVars(els))
-    case While(con, body) => DeclaredVars(body)
+    case CleanUp(g, refs, decls) => map[]
+    /* case While(con, body) => map[] */
     case Seq(s1, s2) => GammaUnion(DeclaredVars(s1), DeclaredVars(s2))
     case Skip => map[]
   }
 }
 
-predicate NoDuplicateReferencesE(expr: Expr) {
-  match expr {
-    case V(val) => true
-    case Var(x) => true
-    case Add(l, r) =>
-      NoDuplicateReferencesE(l) &&
-      NoDuplicateReferencesE(r) &&
-      ReferencedVarsE(l) !! ReferencedVarsE(r)
-    case Eq(l, r) =>
-      NoDuplicateReferencesE(l) &&
-      NoDuplicateReferencesE(r) &&
-      ReferencedVarsE(l) !! ReferencedVarsE(r)
-  }
-}
-
-predicate NoDuplicateReferencesS(stmt: Stmt)
+function method ScopedVars(stmt: Stmt): Gamma
+decreases stmt;
+ensures forall x :: x in ScopedVars(stmt) ==> x in DeclaredVars(stmt);
 {
   match stmt {
-    case VarDecl(x, vtype, vinit) => NoDuplicateReferencesE(vinit)
-    case If(con, the, els) => (
-      NoDuplicateReferencesE(con) &&
-      NoDuplicateReferencesS(the) &&
-      NoDuplicateReferencesS(els) &&
-      ReferencedVarsE(con) !! ReferencedVarsS(the) &&
-      ReferencedVarsE(con) !! ReferencedVarsS(els)
-    )
-    case While(con, body) => (
-      NoDuplicateReferencesE(con) &&
-      NoDuplicateReferencesS(body) &&
-      ReferencedVarsE(con) !! ReferencedVarsS(body)
-    )
-    case Seq(s1, s2) => (
-      NoDuplicateReferencesS(s1) &&
-      NoDuplicateReferencesS(s2) &&
-      ReferencedVarsS(s1) !! ReferencedVarsS(s2)
-    )
-    case Skip => true
+    case VarDecl(x, vtype, vinit) => map[x := vtype]
+    case If(con, the, els) => map[]
+    case CleanUp(g, refs, decls) => map[]
+    /* case While(con, body) => map[] */
+    case Seq(s1, s2) => GammaUnion(GammaWithoutMovedS(ScopedVars(s1), s2), ScopedVars(s2))
+    case Skip => map[]
   }
 }
 
-function ReferencedVarsE(expr: Expr): Gamma
-ensures forall x :: x in ReferencedVarsE(expr) ==> ReferencedVarsE(expr)[x].Invalid?;
+function method ReferencedVarsE(expr: Expr): set<string>
 {
   match expr {
-    case V(val) => map[]
-    case Var(x) => map[x := Invalid]
-    case Add(l, r) => GammaUnion(ReferencedVarsE(l), ReferencedVarsE(r))
-    case Eq(l, r) => GammaUnion(ReferencedVarsE(l), ReferencedVarsE(r))
+    case V(val) => {}
+    case Var(x) => {x}
+    case Add(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
+    case Eq(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
   }
 }
 
-function ReferencedVarsS(stmt: Stmt): Gamma
-ensures forall x :: x in ReferencedVarsS(stmt) ==> ReferencedVarsS(stmt)[x].Invalid?;
+function method ReferencedVarsS(stmt: Stmt): set<string>
+decreases stmt;
+{
+  ReferencedVarsSDec(stmt, 0)
+}
+
+function method ReferencedVarsSDec(stmt: Stmt, n: nat): set<string>
+decreases stmt, n;
 {
   match stmt {
     case VarDecl(x, vtype, vinit) =>
       ReferencedVarsE(vinit)
     case If(con, the, els) =>
-      GammaUnion(GammaUnion(ReferencedVarsE(con), ReferencedVarsS(the)),
-                 ReferencedVarsS(els))
-    case While(con, body) =>
-      GammaUnion(ReferencedVarsE(con), ReferencedVarsS(body))
-    case Seq(s1, s2) => GammaUnion(
-      ReferencedVarsS(s1),
-      map x | x in ReferencedVarsS(s2) && x !in DeclaredVars(s1) :: ReferencedVarsS(s2)[x])
-    case Skip => map[]
+      ReferencedVarsE(con) + ReferencedVarsS(the) + ReferencedVarsS(els)
+    case CleanUp(g, refs, decls) => {}
+    /* case While(con, body) => */
+    /*   ReferencedVarsE(con) + ReferencedVarsS(body) */
+    case Seq(s1, s2) =>
+      ReferencedVarsS(s1) +
+      (set x | x in ReferencedVarsS(s2) && x !in ScopedVars(s1) :: x)
+    case Skip => {}
   }
 }
 
-predicate NoDuplicateScopeS(stmt: Stmt) {
+predicate ConsumedVarsSInv(stmt: Stmt, n: nat, n2: nat)
+ensures ConsumedVarsS(stmt, n) == ConsumedVarsS(stmt, n2);
+{
+  var res := ConsumedVarsS(stmt, n);
+  var res2 := ConsumedVarsS(stmt, n2);
   match stmt {
-    case VarDecl(x, vtype, vinit) => NoDuplicateReferencesE(vinit)
+    case VarDecl(x, vtype, vinit) => (
+      assert res == res2;
+      true
+    )
     case If(con, the, els) => (
-      NoDuplicateReferencesE(con) &&
-      NoDuplicateScopeS(the) &&
-      NoDuplicateScopeS(els) &&
-      ReferencedVarsE(con) !! ScopedVarsS(the) &&
-      ReferencedVarsE(con) !! ScopedVarsS(els)
+      assert res == res2;
+      true
     )
-    case While(con, body) => (
-      NoDuplicateReferencesE(con) &&
-      NoDuplicateScopeS(body) &&
-      ReferencedVarsE(con) !! ScopedVarsS(body)
+    case CleanUp(g, refs, decls) => (
+      assert res == res2;
+      true
     )
+    /* case While(con, body) => */
+    /*   ReferencedVarsE(con) + ReferencedVarsS(body) */
     case Seq(s1, s2) => (
-      NoDuplicateScopeS(s1) &&
-      NoDuplicateScopeS(s2) &&
-      ScopedVarsS(s1) !! ScopedVarsS(s2)
+      assert res == res2;
+      true
     )
-    case Skip => true
+    case Skip => (
+      assert res == res2;
+      true
+    )
   }
 }
 
-function ScopedVarsS(stmt: Stmt): Gamma
-ensures forall x :: x in ScopedVarsS(stmt) ==> ScopedVarsS(stmt)[x].Invalid?;
+lemma ConsumedVarsSInvA(stmt: Stmt)
+ensures forall i:nat , j:nat :: ConsumedVarsS(stmt, i) == ConsumedVarsS(stmt, j);
+{
+  assert forall i:nat, j:nat :: ConsumedVarsSInv(stmt, i, j);
+}
+
+function method ConsumedVarsS(stmt: Stmt, n: nat): set<string>
+decreases stmt, n;
 {
   match stmt {
-    case VarDecl(x, vtype, vinit) =>
-      ReferencedVarsE(vinit)
-    case If(con, the, els) => (
-      var g1k: set<string> := (set x | x in DeclaredVars(the));
-      var g2k: set<string> := (set x | x in DeclaredVars(els));
-      GammaUnion(GammaUnion(GammaUnion(ReferencedVarsE(con), ScopedVarsS(the)),
-                            ScopedVarsS(els)),
-                 (map x | x in g1k + g2k :: Invalid))
-    )
-    case While(con, body) =>
-      GammaUnion(ReferencedVarsE(con), ScopedVarsS(body))
-    case Seq(s1, s2) => GammaUnion(ScopedVarsS(s1), ScopedVarsS(s2))
-    case Skip => map[]
+    case VarDecl(x, vtype, vinit) => {}
+    case If(con, the, els) => ConsumedVarsS(the, 1) + ConsumedVarsS(els, 1)
+    case CleanUp(g, refs, decls) =>
+      (set x | x in ScopedVars(decls)) + (set x | x in ReferencedVarsS(refs) && x in g && MoveType(g[x]))
+                                       + ConsumedVarsS(refs, 1)
+    /* case While(con, body) => */
+    /*   ReferencedVarsE(con) + ReferencedVarsS(body) */
+    case Seq(s1, s2) => ConsumedVarsS(s1, 1) + ConsumedVarsS(s2, 1)
+    case Skip => {}
   }
+}
+
+function GammaWithoutMovedE(g: Gamma, expr: Expr): Gamma
+ensures GammaExtends(GammaWithoutMovedE(g, expr), g);
+{
+  map x | x in g && (x !in ReferencedVarsE(expr) || !MoveType(g[x])) :: g[x]
+}
+
+function method GammaWithoutMovedS(g: Gamma, stmt: Stmt): Gamma
+ensures GammaExtends(GammaWithoutMovedS(g, stmt), g);
+decreases stmt;
+{
+  map x | x in g && !(x in ReferencedVarsSDec(stmt, 0) && MoveType(g[x]))
+                 && !(x in ConsumedVarsS(stmt, 0)):: g[x]
+}
+
+predicate GammaWithoutMovedSeqDistributionStr1(g: Gamma, s1: Stmt, s2: Stmt, x: string)
+requires x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+ensures x in GammaWithoutMovedS(g, Seq(s1,s2));
+{
+  assert x in g;
+  assert !(x in ReferencedVarsSDec(s1, 0) && MoveType(g[x]));
+  assert x !in ConsumedVarsS(s1, 0);
+
+  assert !(x in ReferencedVarsSDec(s2, 0) && MoveType(g[x]));
+  assert x !in ConsumedVarsS(s2, 0);
+
+  assert x !in ConsumedVarsS(Seq(s1, s2), 0);
+
+  true
+}
+
+predicate GammaWithoutMovedSeqDistributionStr2(g: Gamma, s1: Stmt, s2: Stmt, x: string)
+requires x in GammaWithoutMovedS(g, Seq(s1,s2));
+ensures x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+{
+  assert x in g;
+  assert x !in ConsumedVarsS(Seq(s1, s2), 0);
+  assert x !in ConsumedVarsS(s1, 1) + ConsumedVarsS(s2, 1);
+  assert x !in ConsumedVarsS(s1, 0) + ConsumedVarsS(s2, 0);
+  assert x !in ConsumedVarsS(s1, 0);
+  assert x !in ConsumedVarsS(s2, 0);
+
+  assert MoveType(g[x]) ==> x !in ReferencedVarsSDec(Seq(s1, s2), 0);
+  assert MoveType(g[x]) ==> x !in ReferencedVarsS(s1) +
+      (set x | x in ReferencedVarsS(s2) && x !in ScopedVars(s1) :: x);
+
+  assert MoveType(g[x]) ==> x !in ReferencedVarsS(s1);
+  assert MoveType(g[x]) ==> x !in ReferencedVarsS(s2) || x in ScopedVars(s1);
+
+  assert !(x in ReferencedVarsSDec(s1, 0) && MoveType(g[x]));
+  assert !(x in ReferencedVarsSDec(s2, 0) && MoveType(g[x]));
+  true
+}
+
+lemma GammaWithoutMovedSeqDistribution(g: Gamma, s1: Stmt, s2: Stmt)
+ensures GammaWithoutMovedS(g, Seq(s1,s2)) == GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+{
+  assert forall x :: x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2)
+                 ==> GammaWithoutMovedSeqDistributionStr1(g, s1, s2, x)
+                 ==> x in GammaWithoutMovedS(g, Seq(s1,s2));
+  assert forall x :: x in GammaWithoutMovedS(g, Seq(s1,s2))
+                 ==> GammaWithoutMovedSeqDistributionStr2(g, s1, s2, x)
+                 ==> x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+}
+
+predicate GammaWithoutMovedIfDistributionStr1(g: Gamma, cond: Expr, the: Stmt, els: Stmt, x: string)
+requires x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els);
+ensures x in GammaWithoutMovedS(g, If(cond, the, els));
+{
+  assert x in g;
+  assert x !in ConsumedVarsS(the, 0);
+  assert x !in ConsumedVarsS(els, 0);
+  assert x !in ConsumedVarsS(If(cond, the, els), 0);
+  true
+}
+
+predicate GammaWithoutMovedIfDistributionStr2(g: Gamma, cond: Expr, the: Stmt, els: Stmt, x: string)
+requires x in GammaWithoutMovedS(g, If(cond, the, els));
+ensures x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els);
+{
+  assert x in g;
+  assert x !in ConsumedVarsS(If(cond, the, els), 0);
+  assert x !in ConsumedVarsS(the, 1) + ConsumedVarsS(els, 1);
+  assert x !in ConsumedVarsS(the, 0) + ConsumedVarsS(els, 0);
+  assert x !in ConsumedVarsS(the, 0);
+  assert x !in ConsumedVarsS(els, 0);
+  true
+}
+
+lemma GammaWithoutMovedIfDistribution(g: Gamma, cond: Expr, the: Stmt, els: Stmt)
+ensures GammaWithoutMovedS(g, If(cond, the, els)) ==
+        GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els);
+{
+  assert forall x :: x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els)
+                 ==> GammaWithoutMovedIfDistributionStr1(g, cond, the, els, x)
+                 ==> x in GammaWithoutMovedS(g, If(cond, the, els));
+  assert forall x :: x in GammaWithoutMovedS(g, If(cond, the, els))
+                 ==> GammaWithoutMovedIfDistributionStr2(g, cond, the, els, x)
+                 ==> x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els);
 }
 
 datatype TypeCheckERes = Fail | Type(gamma: Gamma, typ: Type)
@@ -222,34 +277,31 @@ function method TypeCheckV(val: Value): Type
 
 function method TypeCheckE(g: Gamma, expr: Expr): TypeCheckERes
 decreases expr;
-ensures TypeCheckE(g, expr).Type? ==> NoDuplicateReferencesE(expr);
-ensures TypeCheckE(g, expr).Type? ==> GammaDeclarationsE(g, expr);
 ensures TypeCheckE(g, expr).Type? ==>
-        forall x ::x in ReferencedVarsE(expr) ==> x in TypeCheckE(g, expr).gamma && TypeCheckE(g, expr).gamma[x].Invalid?;
+        GammaDeclarationsE(g, expr);
 ensures TypeCheckE(g, expr).Type? ==>
-        GammaExtendsInv(g, GammaUnion(g, ReferencedVarsE(expr)));
-ensures TypeCheckE(g, expr).Type? ==>
-        GammaUnion(g, ReferencedVarsE(expr)) == TypeCheckE(g, expr).gamma;
+        TypeCheckE(g, expr).gamma == GammaWithoutMovedE(g, expr);
+
 ensures TypeCheckE(g, expr).Type? && expr.Add? ==>
         TypeCheckE(g, expr.leftA).Type? &&
-        TypeCheckE(TypeCheckE(g, expr.leftA).gamma, expr.rightA).Type? &&
-        ReferencedVarsE(expr.leftA) !! ReferencedVarsE(expr.rightA);
+        TypeCheckE(g, expr.leftA).typ.NumT? &&
+        TypeCheckE(GammaWithoutMovedE(g, expr.leftA), expr.rightA).Type? &&
+        TypeCheckE(GammaWithoutMovedE(g, expr.leftA), expr.rightA).typ.NumT?;
 ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
         TypeCheckE(g, expr.leftE).Type? &&
-        TypeCheckE(TypeCheckE(g, expr.leftE).gamma, expr.rightE).Type? &&
-        ReferencedVarsE(expr.leftE) !! ReferencedVarsE(expr.rightE);
+        TypeCheckE(GammaWithoutMovedE(g, expr.leftE), expr.rightE).Type? &&
+        TypeCheckE(g, expr.leftE).typ ==
+        TypeCheckE(GammaWithoutMovedE(g, expr.leftE), expr.rightE).typ;
 {
   match expr {
 
     case V(val) => (
-      assert GammaUnion(g, ReferencedVarsE(expr)) == g;
       Type(g, TypeCheckV(val))
     )
 
     case Var(x) =>
-      if x in g && !g[x].Invalid? then (
-        assert GammaUnion(g, ReferencedVarsE(expr)) == (map y | y in g :: if x == y then Invalid else g[y]);
-        Type((map y | y in g :: if x == y then Invalid else g[y]), g[x].t)
+      if x in g then (
+        Type(g, g[x])
       ) else (
         Fail
       )
@@ -258,14 +310,6 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
       match TypeCheckE(g, l) {
         case Type(g1, lt) => if !lt.NumT? then Fail else match TypeCheckE(g1, r) {
           case Type(g2, rt) => if !rt.NumT? then Fail else (
-            assert GammaUnion(g, ReferencedVarsE(expr)) == g2;
-
-            assert GammaUnion(g, ReferencedVarsE(l)) == g1;
-            assert GammaExtendsInv(g, g1);
-
-            assert GammaExtends(ReferencedVarsE(l), g1);
-
-            assert ReferencedVarsE(l) !! ReferencedVarsE(r);
             Type(g2, NumT)
           )
           case Fail => Fail
@@ -277,7 +321,6 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
       match TypeCheckE(g, l) {
         case Type(g1, lt) => match TypeCheckE(g1, r) {
           case Type(g2, rt) => if lt == rt then (
-            assert GammaUnion(g, ReferencedVarsE(expr)) == g2;
             Type(g2, BoolT)
           ) else (
             Fail
@@ -290,178 +333,14 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
   }
 }
 
-lemma GammaSeqUnion(g: Gamma, g2: Gamma, g3: Gamma, s1: Stmt, s2: Stmt)
-requires DeclaredVars(s1) !! DeclaredVars(s2);
-requires ScopedVarsS(s1) !! ScopedVarsS(s2);
-requires g2 == GammaUnion(GammaUnion(g, DeclaredVars(s1)),
-                          ScopedVarsS(s1));
-requires g3 == GammaUnion(GammaUnion(g2, DeclaredVars(s2)),
-                          ScopedVarsS(s2));
-ensures g3 == GammaUnion(GammaUnion(g, DeclaredVars(Seq(s1, s2))), ScopedVarsS(Seq(s1, s2)));
-{
-  ghost var seqg1 := GammaUnion(GammaUnion(GammaUnion(GammaUnion(g,
-                                                                 DeclaredVars(s1)),
-                                                     ScopedVarsS(s1)),
-                                           DeclaredVars(s2)),
-                               ScopedVarsS(s2));
-  assert g3 == seqg1;
-  ghost var seqg2 := GammaUnion(GammaUnion(GammaUnion(GammaUnion(g,
-                                                                 DeclaredVars(s1)),
-                                                      DeclaredVars(s2)),
-                                           ScopedVarsS(s1)),
-                                ScopedVarsS(s2));
-  assert seqg1 == seqg2;
-  ghost var seqg3 := GammaUnion(GammaUnion(GammaUnion(g,
-                                                      GammaUnion(DeclaredVars(s1),
-                                                                 DeclaredVars(s2))),
-                                           ScopedVarsS(s1)),
-                                ScopedVarsS(s2));
-  assert seqg2 == seqg3;
-  ghost var seqg4 := GammaUnion(GammaUnion(g,
-                                          GammaUnion(DeclaredVars(s1),
-                                                     DeclaredVars(s2))),
-                                GammaUnion(ScopedVarsS(s1),
-                                           ScopedVarsS(s2)));
-  assert seqg3 == seqg4;
-  ghost var seqg5 := GammaUnion(GammaUnion(g, DeclaredVars(Seq(s1, s2))),
-                                ScopedVarsS(Seq(s1, s2)));
-  assert seqg4 == seqg5;
-  assert g3 == seqg5;
-}
-
-/* lemma GammaUnionDist(g1: Gamma, g2: Gamma, g3: Gamma, g4: Gamma) */
-/* requires g1 !! g2; */
-/* requires g3 !! g4; */
-/* requires forall x :: x in g1 ==> x in g3 && g1[x] == g3[x]; */
-/* requires forall x :: x in g2 ==> x in g4 && g2[x] == g4[x]; */
-/* ensures forall x :: x in GammaUnion(g1, g2) ==> x in GammaUnion(g3, g4) && */
-/*                          GammaUnion(g1, g2)[x] == GammaUnion(g3, g4)[x]; */
-/* { */
-/* } */
-
-/* lemma ScopedReferences(stmt: Stmt) */
-/* requires stmt.If? ==> ReferencedVarsE(stmt.cond) !! ReferencedVarsS(stmt.the) && */
-/*                       ReferencedVarsE(stmt.cond) !! ReferencedVarsS(stmt.els) && */
-/*                       ReferencedVarsE(stmt.cond) !! ScopedVarsS(stmt.the) && */
-/*                       ReferencedVarsE(stmt.cond) !! ScopedVarsS(stmt.els); */
-/* ensures forall x :: x in ReferencedVarsS(stmt) ==> x in ScopedVarsS(stmt) && */
-/*                     ReferencedVarsS(stmt)[x] == ScopedVarsS(stmt)[x]; */
-/* { */
-/*   match stmt { */
-/*     case VarDecl(x, vtype, vinit) => {} */
-/*     case If(con, the, els) => { */
-/*       ScopedReferences(the); */
-/*       assert forall x :: x in ReferencedVarsS(the) ==> x in ScopedVarsS(the) && ReferencedVarsS(the)[x] == ScopedVarsS(the)[x]; */
-
-/*       ScopedReferences(els); */
-/*       assert forall x :: x in ReferencedVarsS(els) ==> x in ScopedVarsS(els) && ReferencedVarsS(els)[x] == ScopedVarsS(els)[x]; */
-
-/*       var g1 := GammaUnion(ReferencedVarsE(con), ReferencedVarsS(the)); */
-/*       var g2 := GammaUnion(ReferencedVarsE(con), ScopedVarsS(the)); */
-/*       GammaUnionDist(ReferencedVarsE(con), ReferencedVarsS(the), */
-/*                      ReferencedVarsE(con), ScopedVarsS(the)); */
-/*       assert forall x :: x in g1 ==> x in g2 && g1[x] == g2[x]; */
-
-/*       assert forall x :: x in g1 ==> x in g2 && g1[x] == g2[x]; */
-
-/*       assert forall x :: x in g1 ==> x in g2 && g1[x] == g2[x]; */
-
-/*     } */
-/*     case While(con, body) => { */
-/*       ScopedReferences(body); */
-/*     } */
-/*     case Seq(s1, s2) => { */
-/*       ScopedReferences(s1); */
-/*       ScopedReferences(s2); */
-/*     } */
-/*     case Skip => {} */
-/*   } */
-/* } */
-
-lemma ScopeUpperBound(s: Stmt)
-ensures forall x :: x in ScopedVarsS(s) ==>
-        (x in ReferencedVarsS(s) && ScopedVarsS(s)[x] == ReferencedVarsS(s)[x]) ||
-        (x in DeclaredVars(s) && ScopedVarsS(s)[x].Invalid?);
-{}
-
-lemma GammaDisjoint(a: Gamma, b: Gamma, c: Gamma, d: Gamma)
-requires forall x :: x in c ==> x in a || x in b;
-requires a !! d;
-requires b !! d;
-ensures c !! d;
-{}
-
-lemma ScopeDisjointE(e: Expr, s: Stmt)
-requires ReferencedVarsE(e) !! ReferencedVarsS(s);
-requires ReferencedVarsE(e) !! DeclaredVars(s);
-ensures ReferencedVarsE(e) !! ScopedVarsS(s);
-{
-  ScopeUpperBound(s);
-  assert forall x :: x in ScopedVarsS(s) ==>
-          x in ReferencedVarsS(s) || x in DeclaredVars(s);
-  GammaDisjoint(ReferencedVarsS(s), DeclaredVars(s), ScopedVarsS(s), ReferencedVarsE(e));
-  assert ScopedVarsS(s) !! ReferencedVarsE(e);
-}
-
-lemma ScopeDisjointS(s1: Stmt, s2: Stmt)
-requires ScopedVarsS(s1) !! ReferencedVarsS(s2);
-requires ReferencedVarsS(s1) !! DeclaredVars(s1);
-requires ReferencedVarsS(s2) !! DeclaredVars(s2);
-requires ReferencedVarsS(s1) !! DeclaredVars(s2);
-requires DeclaredVars(s1) !! DeclaredVars(s2);
-requires ReferencedVarsS(s1) !! ReferencedVarsS(s2);
-ensures ScopedVarsS(s1) !! ScopedVarsS(s2);
-{
-  ScopeUpperBound(s1);
-  assert forall x :: x in ScopedVarsS(s1) ==>
-          x in ReferencedVarsS(s1) || x in DeclaredVars(s1);
-  GammaDisjoint(ReferencedVarsS(s1), DeclaredVars(s1), ScopedVarsS(s1), DeclaredVars(s2));
-  assert ScopedVarsS(s1) !! DeclaredVars(s2);
-
-
-  ScopeUpperBound(s2);
-  assert forall x :: x in ScopedVarsS(s2) ==>
-          x in ReferencedVarsS(s2) || x in DeclaredVars(s2);
-  GammaDisjoint(ReferencedVarsS(s2), DeclaredVars(s2), ScopedVarsS(s2), ReferencedVarsS(s1));
-  assert ScopedVarsS(s2) !! ReferencedVarsS(s1);
-
-  assert ScopedVarsS(s1) !! ReferencedVarsS(s2);
-  assert forall x :: x in ScopedVarsS(s2) ==>
-          x in ReferencedVarsS(s2) || x in DeclaredVars(s2);
-  GammaDisjoint(ReferencedVarsS(s2), DeclaredVars(s2), ScopedVarsS(s2), ScopedVarsS(s1));
-
-  assert ScopedVarsS(s2) !! ScopedVarsS(s1);
-}
-
 function method TypeCheckS(g: Gamma, stmt: Stmt): Option<Gamma>
 decreases stmt;
-ensures TypeCheckS(g, stmt).Some? ==> NoDuplicateDeclarations(stmt);
-ensures TypeCheckS(g, stmt).Some? ==> NoDuplicateReferencesS(stmt);
-ensures TypeCheckS(g, stmt).Some? ==> NoDuplicateScopeS(stmt);
-ensures TypeCheckS(g, stmt).Some? ==> GammaExtendsAdd(ReferencedVarsS(stmt), ScopedVarsS(stmt));
-ensures TypeCheckS(g, stmt).Some? ==> DeclaredVars(stmt) !! ReferencedVarsS(stmt);
-ensures TypeCheckS(g, stmt).Some? ==> g !! DeclaredVars(stmt);
-ensures TypeCheckS(g, stmt).Some? ==> GammaExtends(g, TypeCheckS(g, stmt).val);
-ensures TypeCheckS(g, stmt).Some? ==>
-        GammaExtendsInv(GammaUnion(g, DeclaredVars(stmt)), TypeCheckS(g, stmt).val);
 ensures TypeCheckS(g, stmt).Some? ==> GammaDeclarationsS(g, stmt);
+ensures TypeCheckS(g, stmt).Some? ==> g !! DeclaredVars(stmt);
+ensures TypeCheckS(g, stmt).Some? ==> g !! ScopedVars(stmt);
 ensures TypeCheckS(g, stmt).Some? ==>
-        forall x ::x in ScopedVarsS(stmt) ==> x in TypeCheckS(g, stmt).val && TypeCheckS(g, stmt).val[x].Invalid?;
-ensures TypeCheckS(g, stmt).Some? ==>
-        forall x ::x in ReferencedVarsS(stmt) ==> x in TypeCheckS(g, stmt).val && TypeCheckS(g, stmt).val[x].Invalid?;
-ensures TypeCheckS(g, stmt).Some? ==> TypeCheckS(g, stmt).val ==
-        GammaUnion(GammaUnion(g, DeclaredVars(stmt)),
-                   ScopedVarsS(stmt));
-ensures TypeCheckS(g, stmt).Some? ==> GammaExtendsInv(
-        GammaUnion(GammaUnion(g, DeclaredVars(stmt)),
-                   ReferencedVarsS(stmt)),
-        TypeCheckS(g, stmt).val);
-ensures TypeCheckS(g, stmt).Some? ==>
-        GammaExtendsInv(g, GammaUnion(g, ReferencedVarsS(stmt)));
-ensures TypeCheckS(g, stmt).Some? ==>
-        GammaExtends(g, GammaUnion(g, ScopedVarsS(stmt)));
-ensures TypeCheckS(g, stmt).Some? ==>
-        GammaExtends(g, GammaUnion(g, DeclaredVars(stmt)));
+        TypeCheckS(g, stmt).val ==
+        GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
 ensures TypeCheckS(g, stmt).Some? && stmt.VarDecl? ==>
         TypeCheckE(g, stmt.vinit).Type? && TypeCheckE(g, stmt.vinit).typ == stmt.vtype;
 ensures TypeCheckS(g, stmt).Some? && stmt.If? ==>
@@ -469,26 +348,17 @@ ensures TypeCheckS(g, stmt).Some? && stmt.If? ==>
         TypeCheckE(g, stmt.cond).typ == BoolT &&
         TypeCheckS(TypeCheckE(g, stmt.cond).gamma, stmt.the).Some? &&
         TypeCheckS(TypeCheckE(g, stmt.cond).gamma, stmt.els).Some? &&
-        ReferencedVarsE(stmt.cond) !! ReferencedVarsS(stmt.the) &&
-        ReferencedVarsE(stmt.cond) !! ReferencedVarsS(stmt.els);
-ensures TypeCheckS(g, stmt).Some? && stmt.While? ==>
-        TypeCheckE(g, stmt.wcond).Type? &&
-        TypeCheckE(g, stmt.wcond).typ == BoolT &&
-        TypeCheckS(TypeCheckE(g, stmt.wcond).gamma, stmt.wbody).Some? &&
-        ReferencedVarsE(stmt.wcond) !! ReferencedVarsS(stmt.wbody) &&
-        DeclaredVars(stmt.wbody) !! ReferencedVarsS(stmt.wbody);
+        DeclaredVars(stmt.the) !! DeclaredVars(stmt.els) &&
+        g !! DeclaredVars(stmt.els);
+/* ensures TypeCheckS(g, stmt).Some? && stmt.While? ==> */
+/*         TypeCheckE(g, stmt.wcond).Type? && */
+/*         TypeCheckE(g, stmt.wcond).typ == BoolT && */
+/*         TypeCheckS(TypeCheckE(g, stmt.wcond).gamma, stmt.wbody).Some?; */
 ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
         TypeCheckS(g, stmt.s1).Some? &&
         TypeCheckS(TypeCheckS(g, stmt.s1).val, stmt.s2).Some? &&
-        g !! DeclaredVars(stmt.s1) &&
-        g !! DeclaredVars(stmt.s2) &&
-        DeclaredVars(stmt.s1) !! DeclaredVars(stmt.s2) &&
-        GammaDeclarationsS(g, stmt.s1) &&
-        GammaDeclarationsS(TypeCheckS(g, stmt.s1).val, stmt.s2) &&
-        ScopedVarsS(stmt.s1) !! ScopedVarsS(stmt.s2);
+        DeclaredVars(stmt.s1) !! DeclaredVars(stmt.s2);
 {
-  ghost var gd := DeclaredVars(stmt);
-
   match stmt {
 
     case VarDecl(x, vtype, vinit) =>
@@ -498,11 +368,10 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
         match TypeCheckE(g, vinit) {
           case Type(g2, vt) =>
             if vt == vtype then (
-              assert NoDuplicateDeclarations(stmt);
-              assert NoDuplicateReferencesS(stmt);
-              assert NoDuplicateScopeS(stmt);
-              assert GammaExtendsAdd(ReferencedVarsS(stmt), ScopedVarsS(stmt));
-              Some(g2[x := T(vt)])
+              assert g !! DeclaredVars(stmt);
+              assert GammaDeclarationsS(g, stmt);
+              assert g2[x := vt] == GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
+              Some(g2[x := vt])
             ) else None
           case Fail => None
         }
@@ -511,45 +380,27 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
       match TypeCheckE(g, con) {
         case Type(g2, ct) => if !ct.BoolT? then None else match TypeCheckS(g2, the) {
           case Some(g3) => match TypeCheckS(g2, els) {
-            case Some(g4) => (
-              assert GammaExtendsInv(GammaUnion(g, gd), GammaJoin(g2, GammaJoin(g3, g4)));
-              assert NoDuplicateDeclarations(stmt);
-              assert NoDuplicateReferencesS(stmt);
+            case Some(g4) => if !(DeclaredVars(the) !! DeclaredVars(els)) then None else (
+              assert g !! DeclaredVars(stmt);
+              assert GammaDeclarationsE(g, con);
+              assert GammaDeclarationsS(g2, the);
+              assert GammaDeclarationsS(g2, els);
+              assert GammaDeclarationsS(g, stmt);
 
-              assert NoDuplicateReferencesE(con);
-              assert NoDuplicateScopeS(the);
-              assert NoDuplicateScopeS(els);
+              assert g2 == GammaWithoutMovedE(g, con);
+              assert g3 == GammaUnion(GammaWithoutMovedS(g2, the), ScopedVars(the));
+              assert g4 == GammaUnion(GammaWithoutMovedS(g2, els), ScopedVars(els));
 
-              ScopeDisjointE(con, the);
-              assert ReferencedVarsE(con) !! ScopedVarsS(the);
-              ScopeDisjointE(con, els);
-              assert ReferencedVarsE(con) !! ScopedVarsS(els);
-
-              assert NoDuplicateScopeS(stmt);
-              assert GammaExtendsAdd(ReferencedVarsS(stmt), ScopedVarsS(stmt));
-
-              assert forall x :: x in GammaJoin(GammaJoin(g2, g3), g4) ==>
-                x in GammaUnion(GammaUnion(g, DeclaredVars(stmt)), ScopedVarsS(stmt));
-
-              assert forall x ::
-                x in GammaUnion(GammaUnion(g, DeclaredVars(stmt)), ScopedVarsS(stmt)) ==>
-                x in GammaJoin(GammaJoin(g2, g3), g4);
-
-              assert forall x :: x in GammaJoin(GammaJoin(g2, g3), g4) ==>
-                x in GammaUnion(GammaUnion(g, DeclaredVars(stmt)), ScopedVarsS(stmt)) &&
-                GammaJoin(GammaJoin(g2, g3), g4)[x] ==
-                  GammaUnion(GammaUnion(g, DeclaredVars(stmt)), ScopedVarsS(stmt))[x];
-
-              assert forall x ::
-                x in GammaUnion(GammaUnion(g, DeclaredVars(stmt)), ScopedVarsS(stmt)) ==>
-                x in GammaJoin(GammaJoin(g2, g3), g4) &&
-                GammaJoin(GammaJoin(g2, g3), g4)[x] ==
-                  GammaUnion(GammaUnion(g, DeclaredVars(stmt)), ScopedVarsS(stmt))[x];
+              assert GammaJoin(g2, g3) == GammaWithoutMovedS(GammaWithoutMovedE(g, con), the);
 
               assert GammaJoin(GammaJoin(g2, g3), g4) ==
-                     GammaUnion(GammaUnion(g, DeclaredVars(stmt)),
-                                ScopedVarsS(stmt));
+                     GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, con), the), els);
 
+              GammaWithoutMovedIfDistribution(g, con, the, els);
+
+              assert GammaJoin(GammaJoin(g2, g3), g4) ==
+                     GammaWithoutMovedS(g, stmt);
+              assert GammaJoin(GammaJoin(g2, g3), g4) == GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
               Some(GammaJoin(GammaJoin(g2, g3), g4))
             )
             case None => None
@@ -559,82 +410,53 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
         case Fail => None
       }
 
-    case While(con, body) =>
-      match TypeCheckE(g, con) {
-        case Type(g2, ct) => if !ct.BoolT? then None else match TypeCheckS(g2, body) {
-          case Some(g3) => match TypeCheckE(g3, con) {
-            case Type(g4, ct2) => match TypeCheckS(g4, body) {
-              case Some(g5) => (
-                /* assert GammaExtendsInv(GammaUnion(g, gd), GammaJoin(g2, g3)); */
-                assert NoDuplicateDeclarations(stmt);
-                assert NoDuplicateReferencesS(stmt);
-                assert NoDuplicateScopeS(stmt);
-                assert GammaExtendsAdd(ReferencedVarsS(stmt), ScopedVarsS(stmt));
-                Some(GammaJoin(g2, g3))
-              )
-              case None => None
-            }
-            case Fail => None
-          }
-          case None => None
-        }
-        case Fail => None
-      }
+    case CleanUp(gs, refs, decls) => (
+      assert g !! DeclaredVars(stmt);
+      assert GammaWithoutMovedS(g, stmt) == GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
+      Some(GammaWithoutMovedS(g, stmt)))
+
+    /* case While(con, body) => */
+    /*   match TypeCheckE(g, con) { */
+    /*     case Type(g2, ct) => if !ct.BoolT? then None else match TypeCheckS(g2, body) { */
+    /*       case Some(g3) => match TypeCheckE(g3, con) { */
+    /*         case Type(g4, ct2) => match TypeCheckS(g4, body) { */
+    /*           case Some(g5) => ( */
+    /*             assert GammaJoin(g2, g3) == GammaUnion(GammaWithoutMovedS(g, stmt), */
+    /*                                                    ScopedVars(stmt)); */
+    /*             Some(GammaJoin(g2, g3)) */
+    /*           ) */
+    /*           case None => None */
+    /*         } */
+    /*         case Fail => None */
+    /*       } */
+    /*       case None => None */
+    /*     } */
+    /*     case Fail => None */
+    /*   } */
 
     case Seq(s1, s2) =>
       match TypeCheckS(g, s1) {
         case Some(g2) => match TypeCheckS(g2, s2) {
-          case Some(g3) => (
-            assert GammaExtendsInv(GammaUnion(g, DeclaredVars(s1)), g2);
-            assert GammaExtendsInv(GammaUnion(g2, DeclaredVars(s2)), g3);
-            assert gd == GammaUnion(DeclaredVars(s1), DeclaredVars(s2));
-            assert GammaExtendsInv(GammaUnion(g, gd), g3);
+          case Some(g3) => if !(DeclaredVars(s1) !! DeclaredVars(s2)) then (
+            None
+          ) else if !(g !! DeclaredVars(s2)) then (
+            None
+          ) else (
+            assert g !! DeclaredVars(stmt);
+            assert GammaDeclarationsS(g, stmt);
+            assert g2 == GammaUnion(GammaWithoutMovedS(g, s1), ScopedVars(s1));
+            assert g3 == GammaUnion(GammaWithoutMovedS(g2, s2), ScopedVars(s2));
 
-            assert ReferencedVarsS(s1) !! ReferencedVarsS(s2);
+            assert g3 == GammaUnion(
+              GammaWithoutMovedS(GammaUnion(GammaWithoutMovedS(g, s1), ScopedVars(s1)), s2),
+              ScopedVars(s2));
+            assert g3 == GammaUnion(
+              GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2),
+              ScopedVars(stmt));
 
-            assert g2 == GammaUnion(GammaUnion(g, DeclaredVars(s1)),
-                                    ScopedVarsS(s1));
+            GammaWithoutMovedSeqDistribution(g, s1, s2);
 
-            assert g3 == GammaUnion(GammaUnion(g2, DeclaredVars(s2)),
-                                    ScopedVarsS(s2));
-
-
-            assert g3 == GammaUnion(GammaUnion(GammaUnion(GammaUnion(g,
-                                                                     DeclaredVars(s1)),
-                                                          ScopedVarsS(s1)),
-                                               DeclaredVars(s2)),
-                                    ScopedVarsS(s2));
-
-            ScopeDisjointS(s1, s2);
-            assert ScopedVarsS(s1) !! ScopedVarsS(s2);
-            assert g2 == GammaUnion(GammaUnion(g, DeclaredVars(s1)),
-                                    ScopedVarsS(s1));
-
-            assert g3 == GammaUnion(GammaUnion(g2, DeclaredVars(s2)),
-                                    ScopedVarsS(s2));
-
-            GammaSeqUnion(g, g2, g3, s1, s2);
-
-            assert g3 == GammaUnion(GammaUnion(g, DeclaredVars(stmt)),
-                                    ScopedVarsS(stmt));
-
-            assert NoDuplicateDeclarations(stmt);
-            assert NoDuplicateReferencesS(stmt);
-            assert NoDuplicateScopeS(stmt);
-
-            assert GammaExtendsAdd(ReferencedVarsS(s1), ScopedVarsS(s1));
-            assert GammaExtendsAdd(ReferencedVarsS(s2), ScopedVarsS(s2));
-
-            assert forall x :: x in ReferencedVarsS(stmt) ==> x in ScopedVarsS(stmt);
-
-            assert forall x :: x in ReferencedVarsS(stmt) ==> ReferencedVarsS(stmt)[x].Invalid?;
-            assert forall x :: x in ScopedVarsS(stmt) ==> ScopedVarsS(stmt)[x].Invalid?;
-
-
-            assert forall x :: x in ReferencedVarsS(stmt)
-                   ==> x in ScopedVarsS(stmt)
-                   && ReferencedVarsS(stmt)[x] == ScopedVarsS(stmt)[x];
-            assert GammaExtendsAdd(ReferencedVarsS(stmt), ScopedVarsS(stmt));
+            assert g3 == GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
             Some(g3)
           )
           case None => None
@@ -643,6 +465,7 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
       }
 
     case Skip => (
+      assert g == GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
       Some(g)
     )
   }
@@ -650,478 +473,365 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
 
 type Sigma = map<string, Value>
 
-function TypeSig(sig: Sigma): Gamma {
-  map x | x in sig :: T(TypeCheckV(sig[x]))
-}
-
-predicate SigmaExtends(sig1: Sigma, sig2: Sigma) {
-  forall x :: x in sig1 ==> x in sig2 && sig1[x] == sig2[x]
-}
-
-lemma GammaPreservationE(gamma1: Gamma, gamma2: Gamma, expr: Expr)
-decreases expr;
-requires GammaDeclarationsE(gamma1, expr);
-requires GammaDeclarationsE(gamma2, expr);
-requires forall x :: x in ReferencedVarsE(expr) ==> gamma1[x] == gamma2[x];
-requires TypeCheckE(gamma1, expr).Type?;
-ensures TypeCheckE(gamma2, expr).Type?;
-ensures TypeCheckE(gamma1, expr).typ == TypeCheckE(gamma2, expr).typ;
+function method SigmaWithoutMovedS(s: Sigma, stmt: Stmt): Sigma
+decreases stmt;
 {
-  match expr {
-    case V(val) => {}
-    case Var(x) => {}
-    case Add(l, r) => {
-      assert TypeCheckE(gamma1, l).Type?;
-      var g1: Gamma := TypeCheckE(gamma1, l).gamma;
-      GammaPreservationE(gamma1, gamma2, l);
-      assert TypeCheckE(gamma2, l).Type?;
-      var g2: Gamma := TypeCheckE(gamma2, l).gamma;
-      assert TypeCheckE(g1, r).Type?;
-      GammaPreservationE(g1, g2, r);
-      assert TypeCheckE(g2, r).Type?;
-      assert TypeCheckE(gamma2, Add(l, r)).Type?;
-    }
-    case Eq(l, r) => {
-      assert TypeCheckE(gamma1, l).Type?;
-      var g1: Gamma := TypeCheckE(gamma1, l).gamma;
-      GammaPreservationE(gamma1, gamma2, l);
-      assert TypeCheckE(gamma2, l).Type?;
-      var g2: Gamma := TypeCheckE(gamma2, l).gamma;
-      assert TypeCheckE(g1, r).Type?;
-      GammaPreservationE(g1, g2, r);
-      assert TypeCheckE(g2, r).Type?;
-      assert TypeCheckE(gamma2, Eq(l, r)).Type?;
-    }
-  }
+  map x | x in s && !(x in ReferencedVarsSDec(stmt, 0) && MoveType(TypeCheckV(s[x])))
+                 && !(x in ConsumedVarsS(stmt, 0)) :: s[x]
 }
 
-function method EvalE(sig: Sigma, expr: Expr): Expr
+function method TypeSigma(s: Sigma): Gamma
+ensures forall x :: x in s <==> x in TypeSigma(s);
+ensures forall x :: x in s ==> TypeCheckV(s[x]) == TypeSigma(s)[x];
+{
+  map x | x in s :: TypeCheckV(s[x])
+}
+
+function method EvalE(sig: Sigma, expr: Expr): (Sigma, Expr)
 requires !expr.V?;
-requires TypeCheckE(TypeSig(sig), expr).Type?;
+requires TypeCheckE(TypeSigma(sig), expr).Type?;
 
-ensures TypeCheckE(TypeSig(sig), EvalE(sig, expr)).Type?;
-ensures TypeCheckE(TypeSig(sig), expr).typ ==
-        TypeCheckE(TypeSig(sig), EvalE(sig, expr)).typ;
-ensures GammaExtendsInv(TypeCheckE(TypeSig(sig), EvalE(sig, expr)).gamma,
-                        TypeCheckE(TypeSig(sig), expr).gamma);
+ensures forall x :: x in sig ==> x in EvalE(sig, expr).0;
+ensures TypeCheckE(TypeSigma(sig), expr) ==
+        TypeCheckE(TypeSigma(EvalE(sig, expr).0), EvalE(sig, expr).1);
 {
-  ghost var g := TypeSig(sig);
+
+  ghost var g := TypeCheckE(TypeSigma(sig), expr);
 
   match expr {
 
     case Var(x) => (
-      assert TypeCheckE(g, V(sig[x])).Type?;
-      V(sig[x])
+      assert TypeCheckE(TypeSigma(sig), V(sig[x])).Type?;
+      assert g == TypeCheckE(TypeSigma(sig), V(sig[x]));
+      (sig, V(sig[x]))
     )
 
     case Add(l, r) =>
       if !l.V? then (
-        ghost var g2 := TypeCheckE(g, l).gamma;
-
-        var l2 := EvalE(sig, l);
-        assert TypeCheckE(g, l2).Type?;
-        ghost var g3 := TypeCheckE(g, l2).gamma;
-
-        assert ReferencedVarsE(l) !! ReferencedVarsE(r);
-
-        assert GammaDeclarationsE(g2, r);
-        assert GammaDeclarationsE(g3, r);
-        assert TypeCheckE(g2, r).Type?;
-        GammaPreservationE(g2, g3, r);
-        assert TypeCheckE(g3, r).Type?;
-
-        assert TypeCheckE(g, Add(l2, r)).Type?;
-        Add(l2, r)
+        assert TypeCheckE(TypeSigma(sig), l).Type?;
+        var (sig2, l2) := EvalE(sig, l);
+        assert g == TypeCheckE(TypeSigma(sig2), Add(l2, r));
+        (sig2, Add(l2, r))
       ) else if !r.V? then (
-        assert TypeCheckE(g, Add(l, EvalE(sig, r))).Type?;
-        Add(l, EvalE(sig, r))
+        var (sig2, r2) := EvalE(sig, r);
+        assert g == TypeCheckE(TypeSigma(sig2), Add(l, r2));
+        (sig2, Add(l, r2))
       ) else (
-        assert TypeCheckE(g, V(Num(l.val.nval + r.val.nval))).Type?;
-        V(Num(l.val.nval + r.val.nval))
+        assert g == TypeCheckE(TypeSigma(sig), V(Num(l.val.nval + r.val.nval)));
+        (sig, V(Num(l.val.nval + r.val.nval)))
       )
 
     case Eq(l, r) =>
       if !l.V? then (
-        ghost var g2 := TypeCheckE(g, l).gamma;
-
-        var l2 := EvalE(sig, l);
-        assert TypeCheckE(g, l2).Type?;
-        ghost var g3 := TypeCheckE(g, l2).gamma;
-
-        assert ReferencedVarsE(l) !! ReferencedVarsE(r);
-
-        assert GammaDeclarationsE(g2, r);
-        assert GammaDeclarationsE(g3, r);
-        assert TypeCheckE(g2, r).Type?;
-        GammaPreservationE(g2, g3, r);
-        assert TypeCheckE(g3, r).Type?;
-
-        assert TypeCheckE(g, Eq(l2, r)).Type?;
-        Eq(l2, r)
+        var (sig2, l2) := EvalE(sig, l);
+        assert g == TypeCheckE(TypeSigma(sig2), Eq(l2, r));
+        (sig2, Eq(l2, r))
       ) else if !r.V? then (
-        assert TypeCheckE(g, Eq(l, EvalE(sig, r))).Type?;
-        Eq(l, EvalE(sig, r))
+        var (sig2, r2) := EvalE(sig, r);
+        assert g == TypeCheckE(TypeSigma(sig2), Eq(l, r2));
+        (sig2, Eq(l, r2))
       ) else if l.val.Num? && r.val.Num? then (
-        assert TypeCheckE(g, V(Bool(l.val.nval == r.val.nval))).Type?;
-        V(Bool(l.val.nval == r.val.nval))
+        assert g == TypeCheckE(TypeSigma(sig), V(Bool(l.val.nval == r.val.nval)));
+        (sig, V(Bool(l.val.nval == r.val.nval)))
       ) else (
-        assert TypeCheckE(g, V(Bool(l.val.bval == r.val.bval))).Type?;
-        V(Bool(l.val.bval == r.val.bval))
+        assert g == TypeCheckE(TypeSigma(sig), V(Bool(l.val.bval == r.val.bval)));
+        (sig, V(Bool(l.val.bval == r.val.bval)))
       )
 
   }
 }
 
-/* lemma SigmaPreservationE(sigma1: Sigma, sigma2: Sigma, expr: Expr) */
-/* requires TypeCheckE(TypeSig(sigma1), expr).Type?; */
-/* requires SigmaExtends(sigma1, sigma2); */
-/* ensures TypeCheckE(TypeSig(sigma2), expr).Type?; */
-/* ensures TypeCheckE(TypeSig(sigma1), expr).typ == TypeCheckE(TypeSig(sigma2), expr).typ; */
-/* { */
-/*   SigmaGammaExtends(sigma1, sigma2); */
-/*   GammaPreservationE(TypeSig(sigma1), TypeSig(sigma2), expr); */
-/* } */
-
-/* lemma SigmaPreservation(sig: Sigma, stmt: Stmt) */
-/* requires !stmt.Skip?; */
-/* requires TypeCheckS(TypeSig(sig), stmt).Some?; */
-/* ensures (ghost var (sig2,stmt2) := EvalS(sig, stmt); */
-/*          GammaExtends(TypeCheckS(TypeSig(sig), stmt).val, */
-/*                       TypeCheckS(TypeSig(sig2), stmt2).val)) */
-/* {} */
-
-/* lemma GammaPreservationE(g: Gamma, g2: Gamma, expr: Expr) */
-/* decreases expr; */
-/* requires GammaExtends(g, g2); */
-/* requires TypeCheckE(g, expr).Type?; */
-/* ensures TypeCheckE(g2, expr).Type?; */
-/* ensures TypeCheckE(g, expr).typ == TypeCheckE(g2, expr).typ; */
-/* ensures GammaUnion(g2, TypeCheckE(g, expr).gamma) == TypeCheckE(g2, expr).gamma; */
-/* ensures GammaExtends(TypeCheckE(g, expr).gamma, TypeCheckE(g2, expr).gamma); */
-/* { */
-/*   match expr { */
-
-/*     case V(val) => {} */
-
-/*     case Var(x) => {} */
-
-/*     case Add(l, r) => { */
-/*       GammaPreservationE(g, g2, l); */
-/*       GammaPreservationE(g, g2, r); */
-/*     } */
-
-/*     case Eq(l, r) => { */
-/*       GammaPreservationE(g, g2, l); */
-/*       GammaPreservationE(g, g2, r); */
-/*     } */
-/*   } */
-/* } */
-
-lemma GammaPreservationS(g: Gamma, g2: Gamma, stmt: Stmt)
-decreases stmt;
-requires TypeCheckS(g, stmt).Some?;
-requires GammaDeclarationsS(g, stmt);
-requires GammaDeclarationsS(g2, stmt);
-requires g !! DeclaredVars(stmt);
-requires g2 !! DeclaredVars(stmt);
-requires GammaExtends(g, g2);
-ensures TypeCheckS(g2, stmt).Some?;
-/* ensures GammaUnion(g2, TypeCheckS(g, stmt).val) == TypeCheckS(g2, stmt).val; */
-/* ensures GammaExtends(TypeCheckS(g, stmt).val, TypeCheckS(g2, stmt).val); */
+predicate IfConversion1(g: Gamma, x: string, the: Stmt, els: Stmt)
+requires x !in ScopedVars(the);
+requires x in GammaWithoutMovedS(g, If(V(Bool(true)), the, els));
+ensures x in GammaWithoutMovedS(
+          GammaUnion(GammaWithoutMovedS(g, the), ScopedVars(the)),
+          CleanUp(g, els, the))
 {
-  match stmt {
+  var stmt := If(V(Bool(true)), the, els);
+  assert x in g;
+  assert !(x in ConsumedVarsS(stmt, 0));
+  assert x !in ConsumedVarsS(the, 1) + ConsumedVarsS(els, 1);
+  assert x !in ConsumedVarsS(the, 1);
+  assert x !in ConsumedVarsS(the, 0);
+  assert x !in ConsumedVarsS(els, 1);
+  assert x !in ConsumedVarsS(els, 0);
 
-    case VarDecl(x, vtype, vinit) => {
-      assert x !in g;
-      assert x !in g2;
-      GammaPreservationE(g, g2, vinit);
-    }
 
-    case If(con, the, els) => {
-      assert TypeCheckE(g, con).Type?;
-      ghost var g3 := TypeCheckE(g, con).gamma;
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsS(stmt);
+    assert x !in ReferencedVarsS(the) +  ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(the);
+    assert x !in ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(CleanUp(g, els, the));
+    assert x !in (ReferencedVarsS(els) - ReferencedVarsS(the));
+    assert x !in ConsumedVarsS(CleanUp(g, els, the), 0);
 
-      GammaPreservationE(g, g2, con);
-      assert TypeCheckE(g2, con).Type?;
-      assert TypeCheckE(g2, con).typ.BoolT?;
-      ghost var g4 := TypeCheckE(g2, con).gamma;
+    assert x in GammaWithoutMovedS(g, the);
+    assert x in GammaUnion(GammaWithoutMovedS(g, the), ScopedVars(the));
+    true
+  ) else (
+    assert x !in ConsumedVarsS(CleanUp(g, els, the), 0);
+    assert x in GammaWithoutMovedS(g, the);
+    assert x in GammaUnion(GammaWithoutMovedS(g, the), ScopedVars(the));
+    true
+  )
+}
 
-      assert TypeCheckS(g3, the).Some?;
-      GammaPreservationS(g3, g4, the);
+predicate IfConversion2(g: Gamma, x: string, the: Stmt, els: Stmt)
+requires x in GammaWithoutMovedS(
+          GammaUnion(GammaWithoutMovedS(g, the), ScopedVars(the)),
+          CleanUp(g, els, the))
+ensures x in GammaWithoutMovedS(g, If(V(Bool(true)), the, els));
+{
+  var stmt := If(V(Bool(true)), the, els);
+  assert x !in ConsumedVarsS(CleanUp(g, els, the), 0);
 
-      assert TypeCheckS(g3, the).Some?;
-      GammaPreservationS(g3, g4, els);
-    }
+  assert  ConsumedVarsS(CleanUp(g, els, the), 0) ==
+      (set x | x in ScopedVars(the)) + (set x | x in ReferencedVarsS(els) && x in g && MoveType(g[x]))
+                                     + ConsumedVarsS(els, 1);
+  assert x !in (set x | x in ScopedVars(the))
+             + (set x | x in ReferencedVarsS(els) && x in g && MoveType(g[x]))
+             + ConsumedVarsS(els, 1);
+  assert x !in (set x | x in ScopedVars(the));
+  assert x !in ScopedVars(the);
+  assert x !in ReferencedVarsSDec(CleanUp(g, els, the), 0) || !MoveType(g[x]);
+  assert x !in ConsumedVarsS(els, 0);
 
-    case While(con, body) => {
-      assert TypeCheckE(g, con).Type?;
-      GammaPreservationE(g, g2, con);
-      assert TypeCheckE(g2, con).Type?;
-      assert TypeCheckE(g2, con).typ.BoolT?;
-      ghost var g3 := TypeCheckE(g2, con).gamma;
-      assert GammaExtends(g, g3);
-      GammaPreservationS(g, g3, body);
-      assert TypeCheckS(g3, body).Some?;
-      ghost var g4 := TypeCheckS(g3, body).val;
-      assert GammaExtends(g2, g4);
-      assert GammaExtends(g2, GammaJoin(g2, g4));
-      GammaPreservationE(g2, GammaJoin(g2, g4), con);
-      assert TypeCheckE(GammaJoin(g2, g4), con).Type?;
-      assert TypeCheckE(GammaJoin(g2, g4), con).typ.BoolT?;
-      ghost var g5 := TypeCheckE(GammaJoin(g2, g4), con).gamma;
-      assert GammaExtends(g3, g5);
-      assert GammaExtends(g3, GammaJoin(g3, g5));
-      GammaPreservationS(g3, GammaJoin(g3, g5), body);
-      assert TypeCheckS(GammaJoin(g3, g5), body).Some?;
-      assert TypeCheckS(g2, stmt).Some?;
-    }
+  assert x in GammaUnion(GammaWithoutMovedS(g, the), ScopedVars(the));
+  assert x in GammaWithoutMovedS(g, the);
+  assert x !in ConsumedVarsS(the, 0);
+  assert x in g;
 
-    case Seq(s1, s2) => {
-      assert TypeCheckS(g, s1).Some?;
-      GammaPreservationS(g, g2, s1);
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsS(the);
+    assert x in GammaWithoutMovedS(g, stmt);
+    true
+  ) else (
+    assert x !in ConsumedVarsS(els, 0);
+    assert !(x in ConsumedVarsS(stmt, 0));
+    assert x in GammaWithoutMovedS(g, stmt);
+    true
+  )
+}
 
-      assert TypeCheckS(g2, s1).Some?;
-      ghost var g3 := TypeCheckS(g2, s1).val;
-      assert TypeCheckS(TypeCheckS(g, s1).val, s2).Some?;
+predicate IfConversionE1(g: Gamma, x: string, the: Stmt, els: Stmt)
+requires x !in ScopedVars(els);
+requires x in GammaWithoutMovedS(g, If(V(Bool(false)), the, els));
+ensures x in GammaWithoutMovedS(
+          GammaUnion(GammaWithoutMovedS(g, els), ScopedVars(els)),
+          CleanUp(g, the, els))
+{
+  var stmt := If(V(Bool(false)), the, els);
+  assert x in g;
+  assert !(x in ConsumedVarsS(stmt, 0));
+  assert x !in ConsumedVarsS(the, 1) + ConsumedVarsS(els, 1);
+  assert x !in ConsumedVarsS(the, 1);
+  assert x !in ConsumedVarsS(the, 0);
+  assert x !in ConsumedVarsS(els, 1);
+  assert x !in ConsumedVarsS(els, 0);
 
-      assert GammaExtends(TypeCheckS(g, s1).val, g3);
-      assert g !! DeclaredVars(s2);
-      assert g2 !! DeclaredVars(s2);
 
-      assert TypeCheckS(g, s1).val !! DeclaredVars(s2);
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsS(stmt);
+    assert x !in ReferencedVarsS(the) +  ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(the);
+    assert x !in ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(CleanUp(g, the, els));
+    assert x !in ReferencedVarsS(els);
+    assert x !in ConsumedVarsS(CleanUp(g, the, els), 0);
 
-      assert TypeCheckS(TypeCheckS(g, s1).val, s2).Some?;
+    assert x in GammaWithoutMovedS(g, els);
+    assert x in GammaUnion(GammaWithoutMovedS(g, els), ScopedVars(els));
+    true
+  ) else (
+    assert x !in ConsumedVarsS(CleanUp(g, the, els), 0);
+    assert x in GammaWithoutMovedS(g, els);
+    assert x in GammaUnion(GammaWithoutMovedS(g, els), ScopedVars(els));
+    true
+  )
+}
 
-      assert g3 !! DeclaredVars(s2);
-      GammaPreservationS(TypeCheckS(g, s1).val, g3, s2);
-      assert TypeCheckS(g3, s2).Some?;
-      assert TypeCheckS(g2, stmt).Some?;
-    }
+predicate IfConversionE2(g: Gamma, x: string, the: Stmt, els: Stmt)
+requires x in GammaWithoutMovedS(
+          GammaUnion(GammaWithoutMovedS(g, els), ScopedVars(els)),
+          CleanUp(g, the, els))
+ensures x in GammaWithoutMovedS(g, If(V(Bool(false)), the, els));
+{
+  var stmt := If(V(Bool(false)), the, els);
+  assert x !in ConsumedVarsS(CleanUp(g, the, els), 0);
 
-    case Skip => {}
+  assert  ConsumedVarsS(CleanUp(g, the, els), 0) ==
+      (set x | x in ScopedVars(els)) + (set x | x in ReferencedVarsS(the) && x in g && MoveType(g[x]))
+                                     + ConsumedVarsS(the, 1);
+  assert x !in (set x | x in ScopedVars(els))
+             + (set x | x in ReferencedVarsS(the) && x in g && MoveType(g[x]))
+             + ConsumedVarsS(the, 1);
+  assert x !in (set x | x in ScopedVars(els));
+  assert x !in ScopedVars(els);
+  assert x !in ReferencedVarsSDec(CleanUp(g, the, els), 0) || !MoveType(g[x]);
+  assert x !in ConsumedVarsS(the, 0);
 
-  }
+  assert x in GammaUnion(GammaWithoutMovedS(g, els), ScopedVars(els));
+  assert x in GammaWithoutMovedS(g, els);
+  assert x !in ConsumedVarsS(els, 0);
+  assert x in g;
+
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsS(els);
+    assert x in GammaWithoutMovedS(g, stmt);
+    true
+  ) else (
+    assert x !in ConsumedVarsS(the, 0);
+    assert !(x in ConsumedVarsS(stmt, 0));
+    assert x in GammaWithoutMovedS(g, stmt);
+    true
+  )
 }
 
 function method EvalS(sig: Sigma, stmt: Stmt): (Sigma, Stmt)
 decreases stmt;
 requires !stmt.Skip?;
-requires TypeCheckS(TypeSig(sig), stmt).Some?;
-
-ensures SigmaExtends(sig, EvalS(sig, stmt).0);
-/* ensures GammaUnion(TypeSig(sig), DeclaredVars(stmt)) == */
-/*         GammaUnion(TypeSig(EvalS(sig, stmt).0), DeclaredVars(EvalS(sig, stmt).1)); */
-ensures TypeCheckS(TypeSig(EvalS(sig, stmt).0), EvalS(sig, stmt).1).Some?;
-/* ensures GammaExtends(ScopedVars(EvalS(sig, stmt).1), ScopedVars(stmt)); */
-
-/* ensures ExportSigma((sig, stmt)) == ExportSigma(EvalS(sig, stmt)); */
-
-/* TypeSig eSig(EvalS(sig, stmt).0), EvalS(sig, stmt).1) */
-/* ExportGamma(TypeSig(EvalS(sig, stmt).0), EvalS(sig, stmt).1) */
-/*         == ExportGamma(    ScopedVars(stmt)); */
+requires TypeCheckS(TypeSigma(sig), stmt).Some?;
+ensures forall x :: x in EvalS(sig, stmt).0 ==> x in sig || x in DeclaredVars(stmt);
+ensures forall x :: x in DeclaredVars(EvalS(sig, stmt).1) ==> x in DeclaredVars(stmt);
+ensures TypeCheckS(TypeSigma(sig), stmt) ==
+        TypeCheckS(TypeSigma(EvalS(sig, stmt).0), EvalS(sig, stmt).1);
 {
+  ghost var g := TypeCheckS(TypeSigma(sig), stmt).val;
+
   match stmt {
 
     case VarDecl(x, vt, vinit) =>
       if !vinit.V? then (
-        assert TypeCheckS(TypeSig(sig), VarDecl(x, vt, EvalE(sig, vinit))).Some?;
-        /* assert GammaExtends(ScopedVars(VarDecl(x, vt, EvalE(sig, vinit))), ScopedVars(stmt)); */
-        (sig, VarDecl(x, vt, EvalE(sig, vinit))))
-      else (
-        assert TypeCheckS(TypeSig(sig[x := vinit.val]), Skip).Some?;
-        /* assert GammaExtends(ScopedVars(Skip), ScopedVars(stmt)); */
-        (sig[x := vinit.val], Skip))
+        var (sig2, vinit2) := EvalE(sig, vinit);
+        ghost var g2 := TypeCheckS(TypeSigma(sig2), VarDecl(x, vt, vinit2));
+        assert g2.Some?;
+        assert g == g2.val;
+        (sig2, VarDecl(x, vt, vinit2))
+      ) else (
+        ghost var g2 := TypeCheckS(TypeSigma(sig[x := vinit.val]), Skip);
+        assert g2.Some?;
+        assert g == g2.val;
+        (sig[x := vinit.val], Skip)
+      )
 
     case If(cond, the, els) =>
       if !cond.V? then (
-        /* assert TypeCheckS(TypeSig(sig), If(EvalE(sig, cond), the, els)).Some?; */
-        /* assert GammaExtends(ScopedVars(If(EvalE(sig, cond), the, els)), ScopedVars(stmt)); */
-        (sig, If(EvalE(sig, cond), the, els))
+        var (sig2, cond2) := EvalE(sig, cond);
+        ghost var g2 := TypeCheckS(TypeSigma(sig2), If(cond2, the, els));
+        assert g2.Some?;
+        assert g == g2.val;
+        (sig2, If(cond2, the, els))
       ) else if cond.val.bval then (
-        /* assert TypeCheckS(TypeSig(sig), the).Some?; */
-        /* assert GammaExtends(ScopedVars(the), ScopedVars(stmt)); */
-        /* (sig, the) */
+        ghost var gs := TypeSigma(sig);
+        assert g == GammaWithoutMovedS(gs, If(V(Bool(true)), the, els));
+        ghost var g2 := TypeCheckS(gs, Seq(the, CleanUp(gs, els, the)));
 
-        if !els.Skip? then (
-          (sig, If(cond, the, Skip))
-        ) else if the.Skip? then (
-          assert TypeCheckS(TypeSig(sig), Skip).Some?;
-          (sig, Skip)
-        ) else (
-          var (sig2, the2) := EvalS(sig, the);
-          ghost var g: Gamma := TypeSig(sig);
-          ghost var g2: Gamma := TypeSig(sig2);
-          ghost var g3: Gamma := TypeCheckE(g, cond).gamma;
-          ghost var g4: Gamma := TypeCheckE(g2, cond).gamma;
-          assert GammaExtends(g3, g4);
-          assert TypeCheckS(g4, the2).Some?;
-          assert TypeCheckS(g3, els).Some?;
-          assert g4 !! DeclaredVars(els);
-          GammaPreservationS(g3, g4, els);
-          assert TypeCheckS(TypeSig(sig2), If(cond, the2, els)).Some?;
-          /* assert ExportSigma((sig, the)) == ExportSigma((sig2, the2)); */
-          /* assert ScopedVarsS(stmt) == ScopedVarsS(If(cond, the2, els)); */
-          /* assert ExportSigma((sig, stmt)) == ExportSigma((sig2, If(cond, the2, els))); */
-          (sig2, If(cond, the2, els))
-        )
+        assert TypeCheckE(gs, cond).Type?;
+        assert TypeCheckE(gs, cond).gamma == gs;
+        assert TypeCheckS(gs, the).Some?;
+        ghost var g3 := TypeCheckS(gs, the).val;
+        assert TypeCheckS(g3, CleanUp(gs, els, the)).Some?;
+        assert g2 == TypeCheckS(g3, CleanUp(gs, els, the));
+        assert g2.Some?;
+        assert g2.val == GammaWithoutMovedS(
+          GammaUnion(GammaWithoutMovedS(gs, the), ScopedVars(the)),
+          CleanUp(gs, els, the));
+
+        assert g !! ScopedVars(the);
+        assert forall x :: x in g ==> IfConversion1(gs, x, the, els) && x in g2.val;
+        assert forall x :: x in g2.val ==> IfConversion2(gs, x, the, els) && x in g;
+
+        assert g == g2.val;
+        (sig, Seq(the, CleanUp(TypeSigma(sig), els, the)))
+
       ) else (
-        if !the.Skip? then (
-          (sig, If(cond, Skip, els))
-        ) else if els.Skip? then (
-          assert TypeCheckS(TypeSig(sig), Skip).Some?;
-          (sig, Skip)
-        ) else (
-          var (sig2, els2) := EvalS(sig, els);
-          ghost var g: Gamma := TypeSig(sig);
-          ghost var g2: Gamma := TypeSig(sig2);
-          ghost var g3: Gamma := TypeCheckE(g, cond).gamma;
-          ghost var g4: Gamma := TypeCheckE(g2, cond).gamma;
-          assert GammaExtends(g3, g4);
-          assert TypeCheckS(g3, the).Some?;
-          assert TypeCheckS(g4, els2).Some?;
-          assert g4 !! DeclaredVars(the);
-          GammaPreservationS(g3, g4, the);
-          assert TypeCheckS(TypeSig(sig2), If(cond, the, els2)).Some?;
-          (sig2, If(cond, the, els2))
-        )
+        ghost var gs := TypeSigma(sig);
+        assert g == GammaWithoutMovedS(gs, If(V(Bool(false)), the, els));
+        ghost var g2 := TypeCheckS(gs, Seq(els, CleanUp(gs, the, els)));
+
+        assert TypeCheckE(gs, cond).Type?;
+        assert TypeCheckE(gs, cond).gamma == gs;
+        assert TypeCheckS(gs, els).Some?;
+        ghost var g3 := TypeCheckS(gs, els).val;
+        assert TypeCheckS(g3, CleanUp(gs, the, els)).Some?;
+        assert g2 == TypeCheckS(g3, CleanUp(gs, the, els));
+        assert g2.Some?;
+        assert g2.val == GammaWithoutMovedS(
+          GammaUnion(GammaWithoutMovedS(gs, els), ScopedVars(els)),
+          CleanUp(gs, the, els));
+
+        assert g !! ScopedVars(els);
+        assert forall x :: x in g ==> IfConversionE1(gs, x, the, els) && x in g2.val;
+        assert forall x :: x in g2.val ==> IfConversionE2(gs, x, the, els) && x in g;
+
+        assert g == g2.val;
+        (sig, Seq(els, CleanUp(TypeSigma(sig), the, els)))
       )
 
-    case While(cond, body) => (
-      assert ScopedVarsS(If(V(Bool(true)), body, Skip)) !! DeclaredVars(If(V(Bool(true)), body, Skip));
+    /* case While(cond, body) => ( */
+    /*   /1* assert ScopedVarsS(If(V(Bool(true)), body, Skip)) !! ScopedVars(If(V(Bool(true)), body, Skip)); *1/ */
 
-      assert TypeCheckE(TypeSig(sig), cond).Type?;
-      ghost var g: Gamma := TypeCheckE(TypeSig(sig), cond).gamma;
+    /*   /1* assert TypeCheckE(TypeSig(sig), cond).Type?; *1/ */
+    /*   /1* ghost var g: Gamma := TypeCheckE(TypeSig(sig), cond).gamma; *1/ */
 
-      assert TypeCheckS(g, Skip).Some?;
+    /*   /1* assert TypeCheckS(g, Skip).Some?; *1/ */
 
-      assert TypeCheckS(g, Seq(If(V(Bool(true)), body, Skip),
-                   While(cond, body))).Some?;
+    /*   /1* assert TypeCheckS(g, Seq(If(V(Bool(true)), body, Skip), *1/ */
+    /*   /1*              While(cond, body))).Some?; *1/ */
 
-      assert TypeCheckS(TypeSig(sig), If(cond,
-               Seq(If(V(Bool(true)), body, Skip),
-                   While(cond, body)), Skip)).Some?;
-      assert GammaExtends(ScopedVarsS(If(cond,
-               Seq(If(V(Bool(true)), body, Skip),
-                   While(cond, body)), Skip)), ScopedVarsS(stmt));
-      /* assert ExportSigma((sig, stmt)) == ExportSigma((sig, If(cond, */
-      /*          Seq(If(V(Bool(true)), body, Skip), */
-      /*              While(cond, body)), Skip))); */
-      (sig, If(cond,
-               Seq(If(V(Bool(true)), body, Skip),
-                   While(cond, body)), Skip))
+    /*   /1* assert TypeCheckS(TypeSig(sig), If(cond, *1/ */
+    /*   /1*          Seq(If(V(Bool(true)), body, Skip), *1/ */
+    /*   /1*              While(cond, body)), Skip)).Some?; *1/ */
+    /*   /1* assert GammaExtends(ScopedVarsS(If(cond, *1/ */
+    /*   /1*          Seq(If(V(Bool(true)), body, Skip), *1/ */
+    /*   /1*              While(cond, body)), Skip)), ScopedVarsS(stmt)); *1/ */
+    /*   /1* assert ExportSigma((sig, stmt)) == ExportSigma((sig, If(cond, *1/ */
+    /*   /1*          Seq(If(V(Bool(true)), body, Skip), *1/ */
+    /*   /1*              While(cond, body)), Skip))); *1/ */
+    /*   ghost var g2 := TypeCheckS(TypeSig(sig), If(cond, */
+    /*            Seq(If(V(Bool(true)), body, Skip), */
+    /*                While(cond, body)), Skip)); */
+    /*   assert g2.Some?; */
+    /*   assert g == g2.val; */
+    /*   (sig, If(cond, */
+    /*            Seq(If(V(Bool(true)), body, Skip), */
+    /*                While(cond, body)), Skip)) */
+    /* ) */
+
+    case CleanUp(gs, refs, decls) => (
+      ghost var g2 := TypeCheckS(TypeSigma(SigmaWithoutMovedS(sig, stmt)), Skip);
+      assert g2.Some?;
+      assert g == g2.val;
+      (SigmaWithoutMovedS(sig, stmt), Skip)
     )
 
     case Seq(s1, s2) =>
       if s1.Skip? then (
-        assert TypeCheckS(TypeSig(sig), s2).Some?;
-        assert GammaExtends(ScopedVarsS(s2), ScopedVarsS(stmt));
+        /* assert TypeCheckS(TypeSig(sig), s2).Some?; */
+        /* assert GammaExtends(ScopedVarsS(s2), ScopedVarsS(stmt)); */
+        ghost var g2 := TypeCheckS(TypeSigma(sig), s2);
+        assert g2.Some?;
         (sig, s2)
       ) else (
         var (sig2, s12) := EvalS(sig, s1);
-        ghost var g: Gamma := TypeSig(sig);
-        ghost var g2: Gamma := TypeSig(sig2);
-        assert GammaExtends(g, g2);
+        assert TypeCheckS(TypeSigma(sig), s1).Some?;
+        ghost var g2 := TypeCheckS(TypeSigma(sig), s1).val;
+        assert TypeCheckS(g2, s2).Some?;
 
-        assert TypeCheckS(g, s1).Some?;
-        ghost var g3: Gamma := TypeCheckS(g, s1).val;
+        assert TypeCheckS(TypeSigma(sig2), s12).Some?;
+        ghost var g3 := TypeCheckS(TypeSigma(sig2), s12).val;
+        assert GammaExtends(g2, g3);
+        assert TypeSigma(sig) !! DeclaredVars(s2);
+        assert TypeSigma(sig2) !! DeclaredVars(s2);
+        assert DeclaredVars(s12) !! DeclaredVars(s2);
 
-        assert g !! DeclaredVars(s1);
-        assert GammaExtends(g, g3);
-        /* assert GammaExtends(TypeCheckS(g, s1).val, GammaUnion(g, DeclaredVars(s1))); */
-
-
-        assert TypeCheckS(g2, s12).Some?;
-        ghost var g4: Gamma := TypeCheckS(g2, s12).val;
-
-        assert TypeCheckS(g3, s2).Some?;
-
-        assert TypeCheckS(g3, s2).Some?;
-
-        assert GammaExtends(g3, g4);
-
-        /* assert GammaExtends(ExportGamma(g2, s1), GammaUnion(g, ScopedVars(s1))); */
-
-        assert g !! DeclaredVars(s2);
-        assert GammaUnion(g, ScopedVarsS(s1)) !! DeclaredVars(s2);
-
-        assert g2 !! DeclaredVars(s2);
-        assert TypeCheckS(g3, s2).Some?;
-        assert GammaExtends(g3, g4);
-
-        assert g4 !! DeclaredVars(s2);
-        GammaPreservationS(g3, g4, s2);
-
-        assert TypeCheckS(g4, s2).Some?;
-
-        assert TypeCheckS(g2, Seq(s12, s2)).Some?;
-        assert GammaExtends(ScopedVarsS(Seq(s12, s2)), ScopedVarsS(stmt));
-        /* assert ExportSigma((sig, stmt)) == ExportSigma((sig2, Seq(s12, s2))); */
+        ghost var g4 := TypeCheckS(TypeSigma(sig2), Seq(s12, s2));
+        assert g4.Some?;
+        assert g == g4.val;
         (sig2, Seq(s12, s2))
       )
 
   }
 }
-
-/* predicate CanStepE(sig: Sigma, expr: Expr) */
-/* { */
-/*   expr.V? || EvalE(sig, expr).ResE? */
-/* } */
-
-/* predicate CanStep(sig: Sigma, stmt: Stmt) */
-/* { */
-/*   stmt.Skip? || EvalS(sig, stmt).Res? */
-/* } */
-
-/* /1* lemma PreservationE(sig: Sigma, expr: Expr) *1/ */
-/* /1* requires EvalE(sig, expr).ResE?; *1/ */
-/* /1* requires TypeCheckE(TypeSig(sig), expr).Type?; *1/ */
-/* /1* ensures TypeCheckE(TypeSig(EvalE(sig, expr).sig), EvalE(sig, expr).expr).Type?; *1/ */
-/* /1* ensures TypeCheckE(TypeSig(sig), expr).typ == *1/ */
-/* /1*         TypeCheckE(TypeSig(EvalE(sig, expr).sig), EvalE(sig, expr).expr).typ; *1/ */
-/* /1* { *1/ */
-/* /1*   match expr { *1/ */
-/* /1*     case V(val) => { *1/ */
-/* /1*     } *1/ */
-
-/* /1*     case Var(x) => { *1/ */
-/* /1*     } *1/ */
-
-/* /1*     case Add(l, r) => { *1/ */
-/* /1*       /2* PreservationE(sig, l); *2/ *1/ */
-/* /1*       /2* PreservationE(sig, r); *2/ *1/ */
-/* /1*     } *1/ */
-
-/* /1*     case Eq(l, r) => { *1/ */
-/* /1*     } *1/ */
-/* /1*   } *1/ */
-/* /1* } *1/ */
-
-/* method Run(prog: Stmt) { */
-/*   var t: Option<Gamma> := TypeCheckS(map[], prog); */
-/*   if t.None? { */
-/*     print "Type error!\n"; */
-/*   } else { */
-/*     print "Type checking succesful.\nEvaluating...\n"; */
-/*     var n:nat := 0; */
-/*     var env: Sigma := map[]; */
-/*     var s: Stmt := prog; */
-/*     while n < 100000 && !s.Skip? */
-/*     { */
-/*       var res: EvalSRes := EvalS(env, s); */
-/*       if res.Halt? { */
-/*         print "This should never happen."; */
-/*         s := Skip; */
-/*       } else { */
-/*         s := res.stmt; */
-/*         env := res.env; */
-/*       } */
-/*       n := n + 1; */
-/*     } */
-/*     print "Ran "; */
-/*     print n; */
-/*     print " steps.\n\nFinal environment:\n"; */
-/*     print env; */
-/*     print "\n"; */
-/*   } */
-/* } */
-
