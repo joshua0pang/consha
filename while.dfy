@@ -11,7 +11,7 @@ datatype Expr = V(val: Value)
 datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | If(cond: Expr, the: Stmt, els: Stmt)
               | CleanUp(g: Gamma, refs: Stmt, decls: Stmt)
-              /* | While(wcond: Expr, wbody: Stmt) */
+              | While(wcond: Expr, wbody: Stmt)
               | Seq(s1: Stmt, s2: Stmt)
               | Skip
 
@@ -59,7 +59,7 @@ decreases stmt;
     case VarDecl(x, vtype, vinit) => map[x := vtype]
     case If(con, the, els) => GammaUnion(DeclaredVars(the), DeclaredVars(els))
     case CleanUp(g, refs, decls) => map[]
-    /* case While(con, body) => map[] */
+    case While(con, body) => map[]
     case Seq(s1, s2) => GammaUnion(DeclaredVars(s1), DeclaredVars(s2))
     case Skip => map[]
   }
@@ -73,7 +73,7 @@ ensures forall x :: x in ScopedVars(stmt) ==> x in DeclaredVars(stmt);
     case VarDecl(x, vtype, vinit) => map[x := vtype]
     case If(con, the, els) => map[]
     case CleanUp(g, refs, decls) => map[]
-    /* case While(con, body) => map[] */
+    case While(con, body) => map[]
     case Seq(s1, s2) => GammaUnion(GammaWithoutMovedS(ScopedVars(s1), s2), ScopedVars(s2))
     case Skip => map[]
   }
@@ -104,8 +104,8 @@ decreases stmt, n;
     case If(con, the, els) =>
       ReferencedVarsE(con) + ReferencedVarsS(the) + ReferencedVarsS(els)
     case CleanUp(g, refs, decls) => {}
-    /* case While(con, body) => */
-    /*   ReferencedVarsE(con) + ReferencedVarsS(body) */
+    case While(con, body) =>
+      ReferencedVarsE(con) + ReferencedVarsS(body)
     case Seq(s1, s2) =>
       ReferencedVarsS(s1) +
       (set x | x in ReferencedVarsS(s2) && x !in ScopedVars(s1) :: x)
@@ -131,8 +131,10 @@ ensures ConsumedVarsS(stmt, n) == ConsumedVarsS(stmt, n2);
       assert res == res2;
       true
     )
-    /* case While(con, body) => */
-    /*   ReferencedVarsE(con) + ReferencedVarsS(body) */
+    case While(con, body) => (
+      assert res == res2;
+      true
+    )
     case Seq(s1, s2) => (
       assert res == res2;
       true
@@ -159,8 +161,7 @@ decreases stmt, n;
     case CleanUp(g, refs, decls) =>
       (set x | x in ScopedVars(decls)) + (set x | x in ReferencedVarsS(refs) && x in g && MoveType(g[x]))
                                        + ConsumedVarsS(refs, 1)
-    /* case While(con, body) => */
-    /*   ReferencedVarsE(con) + ReferencedVarsS(body) */
+    case While(con, body) => ConsumedVarsS(body, 1)
     case Seq(s1, s2) => ConsumedVarsS(s1, 1) + ConsumedVarsS(s2, 1)
     case Skip => {}
   }
@@ -228,6 +229,39 @@ ensures GammaWithoutMovedS(g, Seq(s1,s2)) == GammaWithoutMovedS(GammaWithoutMove
   assert forall x :: x in GammaWithoutMovedS(g, Seq(s1,s2))
                  ==> GammaWithoutMovedSeqDistributionStr2(g, s1, s2, x)
                  ==> x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+}
+
+predicate GammaWithoutMovedWhileDistributionStr1(g: Gamma, con: Expr, body: Stmt, x: string)
+requires x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body));
+ensures x in GammaWithoutMovedS(g, While(con, body));
+{
+  assert x in g;
+  assert x !in ConsumedVarsS(body, 0);
+  assert x !in ConsumedVarsS(While(con, body), 0);
+  true
+}
+
+predicate GammaWithoutMovedWhileDistributionStr2(g: Gamma, con: Expr, body: Stmt, x: string)
+requires x in GammaWithoutMovedS(g, While(con, body));
+ensures x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body));
+{
+  assert x in g;
+  assert x !in ConsumedVarsS(While(con, body), 0);
+  assert x !in ConsumedVarsS(body, 1);
+  assert x !in ConsumedVarsS(body, 0);
+  true
+}
+
+lemma GammaWithoutMovedWhileDistribution(g: Gamma, con: Expr, body: Stmt)
+ensures GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body))
+     == GammaWithoutMovedS(g, While(con, body));
+{
+  assert forall x :: x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body))
+                 ==> GammaWithoutMovedWhileDistributionStr1(g, con, body, x)
+                 ==> x in GammaWithoutMovedS(g, While(con, body));
+  assert forall x :: x in GammaWithoutMovedS(g, While(con, body))
+                 ==> GammaWithoutMovedWhileDistributionStr2(g, con, body, x)
+                 ==> x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body));
 }
 
 predicate GammaWithoutMovedIfDistributionStr1(g: Gamma, cond: Expr, the: Stmt, els: Stmt, x: string)
@@ -350,14 +384,17 @@ ensures TypeCheckS(g, stmt).Some? && stmt.If? ==>
         TypeCheckS(TypeCheckE(g, stmt.cond).gamma, stmt.els).Some? &&
         DeclaredVars(stmt.the) !! DeclaredVars(stmt.els) &&
         g !! DeclaredVars(stmt.els);
-/* ensures TypeCheckS(g, stmt).Some? && stmt.While? ==> */
-/*         TypeCheckE(g, stmt.wcond).Type? && */
-/*         TypeCheckE(g, stmt.wcond).typ == BoolT && */
-/*         TypeCheckS(TypeCheckE(g, stmt.wcond).gamma, stmt.wbody).Some?; */
+ensures TypeCheckS(g, stmt).Some? && stmt.While? ==>
+        TypeCheckE(g, stmt.wcond).Type? &&
+        TypeCheckE(g, stmt.wcond).typ.BoolT? &&
+        TypeCheckS(TypeCheckE(g, stmt.wcond).gamma, stmt.wbody).Some? &&
+        GammaWithoutMovedS(GammaWithoutMovedE(g, stmt.wcond), stmt.wbody) == g &&
+        DeclaredVars(stmt.wbody) == map[];
 ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
         TypeCheckS(g, stmt.s1).Some? &&
         TypeCheckS(TypeCheckS(g, stmt.s1).val, stmt.s2).Some? &&
         DeclaredVars(stmt.s1) !! DeclaredVars(stmt.s2);
+ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val;
 {
   match stmt {
 
@@ -415,24 +452,21 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
       assert GammaWithoutMovedS(g, stmt) == GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
       Some(GammaWithoutMovedS(g, stmt)))
 
-    /* case While(con, body) => */
-    /*   match TypeCheckE(g, con) { */
-    /*     case Type(g2, ct) => if !ct.BoolT? then None else match TypeCheckS(g2, body) { */
-    /*       case Some(g3) => match TypeCheckE(g3, con) { */
-    /*         case Type(g4, ct2) => match TypeCheckS(g4, body) { */
-    /*           case Some(g5) => ( */
-    /*             assert GammaJoin(g2, g3) == GammaUnion(GammaWithoutMovedS(g, stmt), */
-    /*                                                    ScopedVars(stmt)); */
-    /*             Some(GammaJoin(g2, g3)) */
-    /*           ) */
-    /*           case None => None */
-    /*         } */
-    /*         case Fail => None */
-    /*       } */
-    /*       case None => None */
-    /*     } */
-    /*     case Fail => None */
-    /*   } */
+    case While(con, body) =>
+      match TypeCheckE(g, con) {
+        case Type(g2, ct) => if !ct.BoolT? then None else match TypeCheckS(g2, body) {
+          case Some(g3) => if GammaJoin(g2, g3) != g || DeclaredVars(body) != map[] then None else (
+            assert g3 == GammaUnion(GammaWithoutMovedS(GammaWithoutMovedE(g, con), body), ScopedVars(body));
+            assert GammaJoin(g2, g3) == GammaWithoutMovedS(GammaWithoutMovedE(g, con), body);
+            assert ScopedVars(stmt) == map[];
+            assert GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt)) == GammaWithoutMovedS(g, stmt);
+            GammaWithoutMovedWhileDistribution(g, con, body);
+            assert GammaJoin(g2, g3) == GammaWithoutMovedS(g, stmt);
+            Some(GammaJoin(g2, g3)))
+          case None => None
+        }
+        case Fail => None
+      }
 
     case Seq(s1, s2) =>
       match TypeCheckS(g, s1) {
@@ -447,6 +481,9 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Seq? ==>
             assert g2 == GammaUnion(GammaWithoutMovedS(g, s1), ScopedVars(s1));
             assert g3 == GammaUnion(GammaWithoutMovedS(g2, s2), ScopedVars(s2));
 
+            assert g3 == GammaUnion(
+              GammaWithoutMovedS(GammaUnion(GammaWithoutMovedS(g, s1), ScopedVars(s1)), s2),
+              ScopedVars(s2));
             assert g3 == GammaUnion(
               GammaWithoutMovedS(GammaUnion(GammaWithoutMovedS(g, s1), ScopedVars(s1)), s2),
               ScopedVars(s2));
@@ -770,35 +807,73 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         (sig, Seq(els, CleanUp(TypeSigma(sig), the, els)))
       )
 
-    /* case While(cond, body) => ( */
-    /*   /1* assert ScopedVarsS(If(V(Bool(true)), body, Skip)) !! ScopedVars(If(V(Bool(true)), body, Skip)); *1/ */
+    case While(cond, body) => (
+      ghost var gs := TypeSigma(sig);
+      assert TypeCheckE(gs, cond).Type?;
+      assert TypeCheckE(gs, cond).typ == BoolT;
+      ghost var g2 := TypeCheckE(gs, cond).gamma;
+      assert g2 == GammaWithoutMovedE(gs, cond);
+      // can type check cond
 
-    /*   /1* assert TypeCheckE(TypeSig(sig), cond).Type?; *1/ */
-    /*   /1* ghost var g: Gamma := TypeCheckE(TypeSig(sig), cond).gamma; *1/ */
+      assert TypeCheckE(g2, V(Bool(true))).Type?;
+      assert TypeCheckE(g2, V(Bool(true))).typ == BoolT;
+      assert TypeCheckE(g2, V(Bool(true))).gamma == g2;
+      // can type check V(Bool(true))
 
-    /*   /1* assert TypeCheckS(g, Skip).Some?; *1/ */
+      assert TypeCheckS(g2, body).Some?;
+      // can type check body
 
-    /*   /1* assert TypeCheckS(g, Seq(If(V(Bool(true)), body, Skip), *1/ */
-    /*   /1*              While(cond, body))).Some?; *1/ */
+      assert TypeCheckS(g2, Skip).Some?;
+      assert TypeCheckS(g2, Skip).val == g2;
+      assert TypeCheckS(g2, If(V(Bool(true)), body, Skip)).Some?;
+      ghost var g3 := TypeCheckS(g2, If(V(Bool(true)), body, Skip)).val;
+      assert g3 == GammaWithoutMovedS(g2, body);
+      // can type check    If(V(Bool(true)), body, Skip)
 
-    /*   /1* assert TypeCheckS(TypeSig(sig), If(cond, *1/ */
-    /*   /1*          Seq(If(V(Bool(true)), body, Skip), *1/ */
-    /*   /1*              While(cond, body)), Skip)).Some?; *1/ */
-    /*   /1* assert GammaExtends(ScopedVarsS(If(cond, *1/ */
-    /*   /1*          Seq(If(V(Bool(true)), body, Skip), *1/ */
-    /*   /1*              While(cond, body)), Skip)), ScopedVarsS(stmt)); *1/ */
-    /*   /1* assert ExportSigma((sig, stmt)) == ExportSigma((sig, If(cond, *1/ */
-    /*   /1*          Seq(If(V(Bool(true)), body, Skip), *1/ */
-    /*   /1*              While(cond, body)), Skip))); *1/ */
-    /*   ghost var g2 := TypeCheckS(TypeSig(sig), If(cond, */
-    /*            Seq(If(V(Bool(true)), body, Skip), */
-    /*                While(cond, body)), Skip)); */
-    /*   assert g2.Some?; */
-    /*   assert g == g2.val; */
-    /*   (sig, If(cond, */
-    /*            Seq(If(V(Bool(true)), body, Skip), */
-    /*                While(cond, body)), Skip)) */
-    /* ) */
+      assert TypeCheckS(gs, While(cond, body)).Some?;
+      assert g == GammaWithoutMovedS(g, stmt);
+
+      assert g3 ==
+        GammaJoin(GammaWithoutMovedE(g, stmt.wcond),
+                  GammaWithoutMovedS(GammaWithoutMovedE(g, stmt.wcond), stmt.wbody));
+
+
+
+      assert TypeCheckS(g2, stmt.wbody).val ==
+        GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(body));
+      assert gs == g3;
+
+      assert TypeCheckS(g3, While(cond, body)).Some?;
+      assert TypeCheckS(g3, While(cond, body)).val == g3;
+
+      // can type check   While(cond, body)
+
+      assert DeclaredVars(If(V(Bool(true)), body, Skip)) !! DeclaredVars(While(cond, body));
+      assert g !! DeclaredVars(While(cond, body));
+      assert TypeCheckS(g2, Seq(If(V(Bool(true)), body, Skip),
+                                While(cond, body))).Some?;
+
+      // can typo check the
+      // can type check else
+      // can type check if
+
+      ghost var g4 := TypeCheckS(gs, If(cond,
+               Seq(If(V(Bool(true)), body, Skip),
+                   While(cond, body)), Skip));
+
+      assert g4.Some?;
+      assert g == g4.val;
+      assert DeclaredVars(stmt) == DeclaredVars(body);
+      assert DeclaredVars(body) == DeclaredVars(If(V(Bool(true)), body, Skip));
+      assert DeclaredVars(stmt) == DeclaredVars(If(cond,
+               Seq(If(V(Bool(true)), body, Skip),
+                   While(cond, body)),
+               Skip));
+      (sig, If(cond,
+               Seq(If(V(Bool(true)), body, Skip),
+                   While(cond, body)),
+               Skip))
+    )
 
     case CleanUp(gs, refs, decls) => (
       ghost var g2 := TypeCheckS(TypeSigma(SigmaWithoutMovedS(sig, stmt)), Skip);
@@ -809,8 +884,6 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
 
     case Seq(s1, s2) =>
       if s1.Skip? then (
-        /* assert TypeCheckS(TypeSig(sig), s2).Some?; */
-        /* assert GammaExtends(ScopedVarsS(s2), ScopedVarsS(stmt)); */
         ghost var g2 := TypeCheckS(TypeSigma(sig), s2);
         assert g2.Some?;
         (sig, s2)
@@ -835,3 +908,50 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
 
   }
 }
+
+// ---- Testing ----
+
+method TestVars() {
+  assert TypeCheckE(map[], Var("x")).Fail?;
+  ghost var t1 := TypeCheckE(map["x" := BoolT], Var("x"));
+  assert t1.Type?;
+  assert t1.typ == BoolT;
+  assert t1.gamma == map["x" := BoolT];
+}
+
+method TestAdd() {
+  assert TypeCheckE(map[], Add(V(Num(12)), V(Bool(false)))).Fail?;
+  ghost var t1 := TypeCheckE(map[], Add(V(Num(12)), V(Num(23))));
+  assert t1.Type?;
+  assert t1.typ == NumT;
+}
+
+method TestVarDecl() {
+  assert TypeCheckS(map[], VarDecl("x", NumT, V(Bool(false)))).None?;
+  ghost var t1 := TypeCheckS(map[], VarDecl("x", NumT, V(Num(12))));
+  assert t1.Some?;
+  assert t1.val == map["x" := NumT];
+}
+
+/* method TestIf() { */
+/*   ghost var prog := If(Eq(V(Num(12)), V(Num(4))), */
+/*                        VarDecl("x", NumT, V(Num(1))), */
+/*                        VarDecl("y", NumT, V(Num(2)))); */
+/*   ghost var t1 := TypeCheckS(map[], prog); */
+/*   assert t1.Some?; */
+/*   assert t1.val == map[]; */
+/* } */
+
+/* method TestSeq() { */
+/*   ghost var prog := Seq(VarDecl("x", NumT, V(Num(1))), */
+/*                         VarDecl("x", NumT, V(Num(2)))); */
+/*   assert TypeCheckS(map[], prog).None?; */
+
+/*   ghost var prog2 := Seq(VarDecl("x", NumT, V(Num(1))), */
+/*                          VarDecl("y", BoolT, V(Bool(false)))); */
+
+/*   assert "y" !in map["x" := NumT]; */
+/*   ghost var t1 := TypeCheckS(map[], prog2); */
+/*   assert t1.Some?; */
+/*   assert t1.val == map["x" := NumT, "y" := BoolT]; */
+/* } */
