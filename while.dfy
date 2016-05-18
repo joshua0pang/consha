@@ -227,7 +227,10 @@ ensures ParseBlock(s, n).Some? ==> |ParseBlock(s, n).val.1| < |s|;
   if l.None? then None else (
     assert |l.val.1| < |s|;
     var stmts := ParseProgRec(l.val.1, n);
-    if stmts.None? then None else (
+    if stmts.None? then (
+      var r := SkipWS(Ch('}', l.val.1));
+      if r.None? then None else Some((Skip, r.val.1))
+    ) else (
       var r := SkipWS(Ch('}', stmts.val.1));
       if r.None? then None else Some((stmts.val.0, r.val.1))
     )
@@ -268,7 +271,9 @@ ensures ParseIf(s, n).Some? ==> |ParseIf(s, n).val.1| < |s|;
           var the := ParseBlock(rc.val.1, n);
           if the.None? then None else (
             var elskw := SkipWS(KW("else", the.val.1));
-            if elskw.None? then None else (
+            if elskw.None? then (
+              Some((If(con.val.0, the.val.0, Skip), the.val.1))
+            ) else (
               var els := ParseBlock(elskw.val.1, n);
               if els.None? then None else Some((If(con.val.0, the.val.0, els.val.0), els.val.1))))))))
 }
@@ -311,8 +316,8 @@ class FileSystem {
 method Parse() returns (res: Option<Stmt>) {
   var contents: array<char> := FileSystem.ReadCmdLine();
   if contents == null { return None; }
-  var pres := ParseProgRec(contents[..], 10000);
-  if pres.None? { return None; }
+  var pres := SkipWS(ParseProgRec(contents[..], 10000));
+  if pres.None? || |pres.val.1| > 0 { return None; }
   res := Some(pres.val.0);
 }
 
