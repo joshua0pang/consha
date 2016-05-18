@@ -9,6 +9,7 @@ datatype Expr = V(val: Value)
               | Add(leftA: Expr, rightA: Expr)
               | Eq(leftE: Expr, rightE: Expr)
 datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
+              | Assign(y: string, expr: Expr)
               | If(cond: Expr, the: Stmt, els: Stmt)
               | CleanUp(g: Gamma, refs: Stmt, decls: Stmt)
               | While(wcond: Expr, wbody: Stmt)
@@ -252,8 +253,21 @@ ensures ParseVarDecl(s).Some? ==> |ParseVarDecl(s).val.1| < |s|;
           if e.None? then None else (
             var i := ParseExpr(e.val.1);
             if i.None? then None else (
-                  var s := SkipWS(Ch(';', i.val.1));
-                  if s.None? then None else Some((VarDecl(id.val.0, t.val.0, i.val.0), s.val.1))))))))
+              var s := SkipWS(Ch(';', i.val.1));
+              if s.None? then None else Some((VarDecl(id.val.0, t.val.0, i.val.0), s.val.1))))))))
+}
+
+function method ParseAssign(s: string): Option<(Stmt, string)>
+ensures ParseAssign(s).Some? ==> |ParseAssign(s).val.1| < |s|;
+{
+  var id := SkipWS(ParseId(s));
+  if id.None? then None else (
+    var e := SkipWS(Ch('=', id.val.1));
+    if e.None? then None else (
+      var i := ParseExpr(e.val.1);
+      if i.None? then None else (
+        var s := SkipWS(Ch(';', i.val.1));
+        if s.None? then None else Some((Assign(id.val.0, i.val.0), s.val.1)))))
 }
 
 function method ParseIf(s: string, n: nat): Option<(Stmt, string)>
@@ -299,9 +313,10 @@ decreases |s|, n;
 ensures ParseProgRec(s, n).Some? ==> |ParseProgRec(s, n).val.1| < |s|;
 {
   if n == 0 then None else (
-    var s1 := Or(Or(ParseVarDecl(s),
-                    ParseIf(s, n - 1)),
-                ParseWhile(s, n - 1));
+    var s1 := Or(Or(Or(ParseVarDecl(s),
+                       ParseIf(s, n - 1)),
+                    ParseWhile(s, n - 1)),
+                 ParseAssign(s));
     if s1.None? then None else (
       var s2 := ParseProgRec(s1.val.1, n - 1);
       if s2.None? then s1 else Some((Seq(s1.val.0, s2.val.0), s2.val.1))
@@ -365,6 +380,7 @@ decreases stmt;
 {
   match stmt {
     case VarDecl(x, vtype, vinit) => map[x := vtype]
+    case Assign(y, expr) => map[]
     case If(con, the, els) => GammaUnion(DeclaredVars(the), DeclaredVars(els))
     case CleanUp(g, refs, decls) => map[]
     case While(con, body) => map[]
@@ -379,6 +395,7 @@ ensures forall x :: x in ScopedVars(stmt) ==> x in DeclaredVars(stmt);
 {
   match stmt {
     case VarDecl(x, vtype, vinit) => map[x := vtype]
+    case Assign(y, expr) => map[]
     case If(con, the, els) => map[]
     case CleanUp(g, refs, decls) => map[]
     case While(con, body) => map[]
@@ -409,6 +426,7 @@ decreases stmt, n;
   match stmt {
     case VarDecl(x, vtype, vinit) =>
       ReferencedVarsE(vinit)
+    case Assign(y, expr) => ReferencedVarsE(expr) - {y}
     case If(con, the, els) =>
       ReferencedVarsE(con) + ReferencedVarsS(the) + ReferencedVarsS(els)
     case CleanUp(g, refs, decls) => {}
@@ -428,6 +446,10 @@ ensures ConsumedVarsS(stmt, n) == ConsumedVarsS(stmt, n2);
   var res2 := ConsumedVarsS(stmt, n2);
   match stmt {
     case VarDecl(x, vtype, vinit) => (
+      assert res == res2;
+      true
+    )
+    case Assign(y, expr) => (
       assert res == res2;
       true
     )
@@ -465,6 +487,7 @@ decreases stmt, n;
 {
   match stmt {
     case VarDecl(x, vtype, vinit) => {}
+    case Assign(y, expr) => {}
     case If(con, the, els) => ConsumedVarsS(the, 1) + ConsumedVarsS(els, 1)
     case CleanUp(g, refs, decls) =>
       (set x | x in ScopedVars(decls)) + (set x | x in ReferencedVarsS(refs) && x in g && MoveType(g[x]))
@@ -685,6 +708,9 @@ ensures TypeCheckS(g, stmt).Some? ==>
         GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
 ensures TypeCheckS(g, stmt).Some? && stmt.VarDecl? ==>
         TypeCheckE(g, stmt.vinit).Type? && TypeCheckE(g, stmt.vinit).typ == stmt.vtype;
+ensures TypeCheckS(g, stmt).Some? && stmt.Assign? ==>
+        stmt.y in g && TypeCheckE(g, stmt.expr).Type? &&
+        TypeCheckE(g, stmt.expr).typ == g[stmt.y];
 ensures TypeCheckS(g, stmt).Some? && stmt.If? ==>
         TypeCheckE(g, stmt.cond).Type? &&
         TypeCheckE(g, stmt.cond).typ == BoolT &&
@@ -720,6 +746,15 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
             ) else None
           case Fail => None
         }
+
+    case Assign(y, expr) =>
+      match TypeCheckE(g, expr) {
+        case Type(g2, ct) => (
+          if y !in g || g[y] != ct then None else
+            Some(g2[y := ct])
+        )
+        case Fail => None
+      }
 
     case If(con, the, els) =>
       match TypeCheckE(g, con) {
@@ -1061,6 +1096,20 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         assert g2.Some?;
         assert g == g2.val;
         (sig[x := vinit.val], Skip)
+      )
+
+    case Assign(y, expr) =>
+      if !expr.V? then (
+        var (sig2, expr2) := EvalE(sig, expr);
+        ghost var g2 := TypeCheckS(TypeSigma(sig2), Assign(y, expr2));
+        assert g2.Some?;
+        assert g == g2.val;
+        (sig2, Assign(y, expr2))
+      ) else (
+        ghost var g2 := TypeCheckS(TypeSigma(sig[y := expr.val]), Skip);
+        assert g2.Some?;
+        assert g == g2.val;
+        (sig[y := expr.val], Skip)
       )
 
     case If(cond, the, els) =>
