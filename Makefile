@@ -1,10 +1,10 @@
-default: clean test
+default: clean while.exe
 
 clean:
-	rm -f *.dll *.mdb *.exe *.cs
+	rm -f *.dll *.mdb *.exe while.cs
 
-Arith.exe: Arith.dfy
-	dafny Arith.dfy
+while.exe: while.dfy ReadFileNative.cs
+	dafny while.dfy ReadFileNative.cs
 
-test: Arith.exe
-	mono Arith.exe ex.arith
+test: while.exe
+	mono while.exe ex1.whl

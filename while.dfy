@@ -15,6 +15,309 @@ datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | Seq(s1: Stmt, s2: Stmt)
               | Skip
 
+// --------- Parsing ---------
+
+function method SatP(f: char -> bool, s: string): Option<(char, string)>
+reads f.reads;
+requires forall c :: f.requires(c);
+ensures SatP(f, s).Some? ==> |SatP(f, s).val.1| < |s|;
+{
+  if |s| > 0 && f(s[0]) then
+    Some((s[0], s[1..]))
+  else
+    None
+}
+
+function method Ch(c: char, s: string): Option<(char, string)>
+ensures Ch(c, s).Some? ==> |Ch(c, s).val.1| < |s|;
+{
+  SatP(c1 => c == c1, s)
+}
+
+function method KW(kw: string, s: string): Option<((), string)>
+ensures KW(kw, s).Some? && |kw| >= 1 ==> |KW(kw, s).val.1| < |s|;
+{
+  if |kw| == 0 then (
+    Some(((), s))
+  ) else (
+    var t := Ch(kw[0], s);
+    if t.Some? then KW(kw[1..], t.val.1) else None
+  )
+}
+
+function method Map<A,B>(i: Option<(A, string)>, f: A -> B):  Option<(B, string)>
+reads f.reads;
+requires forall a :: f.requires(a);
+ensures Map(i, f).Some? <==> i.Some?;
+ensures Map(i, f).Some? ==> |Map(i, f).val.1| == |i.val.1|;
+{
+  if i.Some? then Some((f(i.val.0), i.val.1)) else None
+}
+
+function method Or<A>(a: Option<(A, string)>, b: Option<(A, string)>):  Option<(A, string)>
+ensures Or(a, b).Some? ==> a.Some? || b.Some?;
+ensures Or(a, b).Some? && a.Some? ==> |Or(a, b).val.1| == |a.val.1|;
+ensures Or(a, b).Some? && !a.Some? ==> |Or(a, b).val.1| == |b.val.1|;
+{
+  if a.Some? then a else b
+}
+
+function method ParseNumT(s: string): Option<(Type, string)>
+ensures ParseNumT(s).Some? ==> |ParseNumT(s).val.1| < |s|;
+{
+  Map(KW("Num", s), (_) => NumT)
+}
+
+function method ParseBoolT(s: string): Option<(Type, string)>
+ensures ParseBoolT(s).Some? ==> |ParseBoolT(s).val.1| < |s|;
+{
+  Map(KW("Bool", s), (_) => BoolT)
+}
+
+function method ParseType(s: string): Option<(Type, string)>
+ensures ParseType(s).Some? ==> |ParseType(s).val.1| < |s|;
+{
+  Or(ParseBoolT(s), ParseNumT(s))
+}
+
+function method ParseTrue(s: string): Option<(Value, string)>
+ensures ParseTrue(s).Some? ==> |ParseTrue(s).val.1| < |s|;
+{
+  Map(KW("true", s), (_) => Bool(true))
+}
+
+function method ParseFalse(s: string): Option<(Value, string)>
+ensures ParseFalse(s).Some? ==> |ParseFalse(s).val.1| < |s|;
+{
+  Map(KW("false", s), (_) => Bool(false))
+}
+
+function method ParseDigit(s: string): Option<(int, string)>
+ensures ParseDigit(s).Some? ==> |ParseDigit(s).val.1| < |s|;
+{
+  Or(Or(Or(Or(Or(Or(Or(Or(Or(Map(Ch('0', s), c => 0),
+                             Map(Ch('1', s), c => 1)),
+                          Map(Ch('2', s), c => 2)),
+                       Map(Ch('3', s), c => 3)),
+                    Map(Ch('4', s), c => 4)),
+                 Map(Ch('5', s), c => 5)),
+              Map(Ch('6', s), c => 6)),
+           Map(Ch('7', s), c => 7)),
+        Map(Ch('8', s), c => 8)),
+     Map(Ch('9', s), c => 9))
+}
+
+function method ParseNumRec(s: string, i: nat, n: int): (int, string)
+decreases n;
+requires n >= 0;
+ensures |ParseNumRec(s, i, n).1| <= |s|;
+{
+  if n == 0 then (
+    (i, s)
+  ) else (
+    var t := ParseDigit(s);
+    if t.None? then (i, s) else ParseNumRec(t.val.1, i * 10 + t.val.0, n - 1)
+  )
+}
+
+function method ParseNum(s: string): Option<(Value, string)>
+ensures ParseNum(s).Some? ==> |ParseNum(s).val.1| < |s|;
+{
+  var t := ParseDigit(s);
+  if t.None? then None else Map(Some(ParseNumRec(t.val.1, t.val.0, 10)), n => Num(n))
+}
+
+function method ParseVal(s: string): Option<(Expr, string)>
+ensures ParseVal(s).Some? ==> |ParseVal(s).val.1| < |s|;
+{
+  Map(Or(Or(ParseTrue(s),
+            ParseFalse(s)),
+         ParseNum(s)), v => V(v))
+}
+
+function method ParseIdRec(s: string, n: nat): (string, string)
+decreases n;
+ensures |ParseIdRec(s, n).1| <= |s|;
+{
+  if n == 0 then (
+    ("", s)
+  ) else (
+    var t := SatP(c => 'A' <= c <= 'Z' || 'a' <= c <= 'z' || c == '_' || '0' <= c <= '9', s);
+    if t.None? then
+      ("", s)
+    else (
+      var r := ParseIdRec(t.val.1, n - 1);
+      ([t.val.0] + r.0, r.1)
+    )
+  )
+}
+
+function method ParseId(s: string): Option<(string, string)>
+ensures ParseId(s).Some? ==> |ParseId(s).val.1| < |s|;
+{
+  var t := SatP(c => 'A' <= c <= 'Z' || 'a' <= c <= 'z' || c == '_', s);
+  if t.None? then None else (
+    var r := ParseIdRec(t.val.1, 10);
+    Some(([t.val.0] + r.0, r.1))
+  )
+}
+
+function method ParseVar(s: string): Option<(Expr, string)>
+ensures ParseVar(s).Some? ==> |ParseVar(s).val.1| < |s|;
+{
+  Map(ParseId(s), s => Var(s))
+}
+
+function method SkipWS<A>(s: Option<(A,string)>): Option<(A,string)>
+decreases if s.Some? then |s.val.1| else 0;
+ensures s.Some? <==> SkipWS(s).Some?;
+ensures SkipWS(s).Some? ==> |SkipWS(s).val.1| <= |s.val.1|;
+{
+  if s.Some? && |s.val.1| > 0 && (s.val.1[0] == ' ' || s.val.1[0] == '\n' || s.val.1[0] == '\t') then
+    SkipWS(Some((s.val.0, s.val.1[1..])))
+  else
+    s
+}
+
+function method ParseAddRec(s: string, n: nat): Option<(Expr, string)>
+decreases n;
+ensures ParseAddRec(s, n).Some? ==> |ParseAddRec(s, n).val.1| < |s|;
+{
+  var t := SkipWS(Or(ParseVal(s), ParseVar(s)));
+  if n == 0 || t.None? then t else (
+    var p := SkipWS(Ch('+', t.val.1));
+    if p.None? then t else (
+      var r := ParseAddRec(p.val.1, n - 1);
+      if r.None? then t else Some((Add(t.val.0, r.val.0), r.val.1))
+    )
+  )
+}
+
+function method ParseAdd(s: string): Option<(Expr, string)>
+ensures ParseAdd(s).Some? ==> |ParseAdd(s).val.1| < |s|;
+{
+  ParseAddRec(s, 100)
+}
+
+function method ParseExprRec(s: string, n: nat): Option<(Expr, string)>
+decreases n;
+ensures ParseExprRec(s, n).Some? ==> |ParseExprRec(s, n).val.1| < |s|;
+{
+  var t := ParseAdd(s);
+  if n == 0 || t.None? then t else (
+    var p := SkipWS(KW("==", t.val.1));
+    if p.None? then t else (
+      var r := ParseExprRec(p.val.1, n - 1);
+      if r.None? then t else Some((Eq(t.val.0, r.val.0), r.val.1))
+    )
+  )
+}
+
+function method ParseExpr(s: string): Option<(Expr, string)>
+ensures ParseExpr(s).Some? ==> |ParseExpr(s).val.1| < |s|;
+{
+  ParseExprRec(s, 100)
+}
+
+function method ParseBlock(s: string, n: nat): Option<(Stmt, string)>
+decreases |s|, n;
+ensures ParseBlock(s, n).Some? ==> |ParseBlock(s, n).val.1| < |s|;
+{
+  var l := SkipWS(Ch('{', s));
+  if l.None? then None else (
+    assert |l.val.1| < |s|;
+    var stmts := ParseProgRec(l.val.1, n);
+    if stmts.None? then None else (
+      var r := SkipWS(Ch('}', stmts.val.1));
+      if r.None? then None else Some((stmts.val.0, r.val.1))
+    )
+  )
+}
+
+function method ParseVarDecl(s: string): Option<(Stmt, string)>
+ensures ParseVarDecl(s).Some? ==> |ParseVarDecl(s).val.1| < |s|;
+{
+  var v := SkipWS(KW("var", s));
+  if v.None? then None else (
+    var id := SkipWS(ParseId(v.val.1));
+    if id.None? then None else (
+      var c := SkipWS(Ch(':', id.val.1));
+      if c.None? then None else (
+        var t := SkipWS(ParseType(c.val.1));
+        if t.None? then None else (
+          var e := SkipWS(Ch('=', t.val.1));
+          if e.None? then None else (
+            var i := ParseExpr(e.val.1);
+            if i.None? then None else (
+                  var s := SkipWS(Ch(';', i.val.1));
+                  if s.None? then None else Some((VarDecl(id.val.0, t.val.0, i.val.0), s.val.1))))))))
+}
+
+function method ParseIf(s: string, n: nat): Option<(Stmt, string)>
+decreases |s|, n;
+ensures ParseIf(s, n).Some? ==> |ParseIf(s, n).val.1| < |s|;
+{
+  var ifk := SkipWS(KW("if", s));
+  if ifk.None? then None else (
+    var lc := SkipWS(Ch('(', ifk.val.1));
+    if lc.None? then None else (
+      var con := ParseExpr(lc.val.1);
+      if con.None? then None else (
+        var rc := SkipWS(Ch(')', con.val.1));
+        if rc.None? then None else (
+          var the := ParseBlock(rc.val.1, n);
+          if the.None? then None else (
+            var elskw := SkipWS(KW("else", the.val.1));
+            if elskw.None? then None else (
+              var els := ParseBlock(elskw.val.1, n);
+              if els.None? then None else Some((If(con.val.0, the.val.0, els.val.0), els.val.1))))))))
+}
+
+function method ParseWhile(s: string, n: nat): Option<(Stmt, string)>
+decreases |s|, n;
+ensures ParseWhile(s, n).Some? ==> |ParseWhile(s, n).val.1| < |s|;
+{
+  var wk := SkipWS(KW("while", s));
+  if wk.None? then None else (
+    var lc := SkipWS(Ch('(', wk.val.1));
+    if lc.None? then None else (
+      var con := ParseExpr(lc.val.1);
+      if con.None? then None else (
+        var rc := SkipWS(Ch(')', con.val.1));
+        if rc.None? then None else (
+          var body := ParseBlock(rc.val.1, n);
+          if body.None? then None else Some((While(con.val.0, body.val.0), body.val.1))))))
+}
+
+function method ParseProgRec(s: string, n: nat): Option<(Stmt, string)>
+decreases |s|, n;
+ensures ParseProgRec(s, n).Some? ==> |ParseProgRec(s, n).val.1| < |s|;
+{
+  if n == 0 then None else (
+    var s1 := Or(Or(ParseVarDecl(s),
+                    ParseIf(s, n - 1)),
+                ParseWhile(s, n - 1));
+    if s1.None? then None else (
+      var s2 := ParseProgRec(s1.val.1, n - 1);
+      if s2.None? then s1 else Some((Seq(s1.val.0, s2.val.0), s2.val.1))
+    )
+  )
+}
+
+class FileSystem {
+  extern static method ReadCmdLine() returns (contents: array<char>)
+}
+
+method Parse() returns (res: Option<Stmt>) {
+  var contents: array<char> := FileSystem.ReadCmdLine();
+  if contents == null { return None; }
+  var pres := ParseProgRec(contents[..], 10000);
+  if pres.None? { return None; }
+  res := Some(pres.val.0);
+}
+
+// --------- Type Checking ---------
+
 type Gamma = map<string, Type>
 
 function method GammaJoin(g1: Gamma, g2: Gamma): Gamma
@@ -508,6 +811,8 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
   }
 }
 
+// --------- Evaluating ---------
+
 type Sigma = map<string, Value>
 
 function method SigmaWithoutMovedS(s: Sigma, stmt: Stmt): Sigma
@@ -909,7 +1214,7 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
   }
 }
 
-// ---- Testing ----
+// --------- Testing ---------
 
 method TestVars() {
   assert TypeCheckE(map[], Var("x")).Fail?;
@@ -955,3 +1260,35 @@ method TestVarDecl() {
 /*   assert t1.Some?; */
 /*   assert t1.val == map["x" := NumT, "y" := BoolT]; */
 /* } */
+
+// --------- Running ---------
+
+method Main() {
+  var prog: Option<Stmt> := Parse();
+  if prog.None? {
+    print "Parse error!\n";
+    return;
+  }
+  var t: Option<Gamma> := TypeCheckS(TypeSigma(map[]), prog.val);
+  if t.None? {
+    print "Type error!\n";
+    return;
+  }
+  print "Type checking succesful.\nEvaluating...\n";
+  var n:nat := 0;
+  var env: Sigma := map[];
+  var s: Stmt := prog.val;
+  while n < 100000 && !s.Skip?
+  invariant TypeCheckS(TypeSigma(env), s).Some?;
+  {
+    var res := EvalS(env, s);
+    env := res.0;
+    s := res.1;
+    n := n + 1;
+  }
+  print "Ran ";
+  print n;
+  print " steps.\n\nFinal environment:\n";
+  print env;
+  print "\n";
+}
