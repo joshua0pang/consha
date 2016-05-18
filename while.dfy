@@ -8,6 +8,7 @@ datatype Expr = V(val: Value)
               | Var(name: string)
               | Add(leftA: Expr, rightA: Expr)
               | Eq(leftE: Expr, rightE: Expr)
+              | GT(leftG: Expr, rightG: Expr)
 datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | Assign(y: string, expr: Expr)
               | If(cond: Expr, the: Stmt, els: Stmt)
@@ -35,14 +36,17 @@ ensures Ch(c, s).Some? ==> |Ch(c, s).val.1| < |s|;
   SatP(c1 => c == c1, s)
 }
 
-function method KW(kw: string, s: string): Option<((), string)>
+function method KW(kw: string, s: string): Option<(string,string)>
 ensures KW(kw, s).Some? && |kw| >= 1 ==> |KW(kw, s).val.1| < |s|;
 {
   if |kw| == 0 then (
-    Some(((), s))
+    Some(("", s))
   ) else (
     var t := Ch(kw[0], s);
-    if t.Some? then KW(kw[1..], t.val.1) else None
+    if t.None? then None else (
+      var r := KW(kw[1..], t.val.1);
+      if r.None? then None else Some(([kw[0]] + r.val.0, r.val.1))
+    )
   )
 }
 
@@ -206,10 +210,12 @@ ensures ParseExprRec(s, n).Some? ==> |ParseExprRec(s, n).val.1| < |s|;
 {
   var t := ParseAdd(s);
   if n == 0 || t.None? then t else (
-    var p := SkipWS(KW("==", t.val.1));
+    var p := SkipWS(Or(KW(">", t.val.1), KW("==", t.val.1)));
     if p.None? then t else (
       var r := ParseExprRec(p.val.1, n - 1);
-      if r.None? then t else Some((Eq(t.val.0, r.val.0), r.val.1))
+      if r.None? then t else Some((
+        if p.val.0 == ">" then GT(t.val.0, r.val.0) else Eq(t.val.0, r.val.0),
+        r.val.1))
     )
   )
 }
@@ -410,6 +416,7 @@ function method ReferencedVarsE(expr: Expr): set<string>
     case V(val) => {}
     case Var(x) => {x}
     case Add(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
+    case GT(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
     case Eq(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
   }
 }
@@ -648,11 +655,19 @@ ensures TypeCheckE(g, expr).Type? ==>
         TypeCheckE(g, expr).gamma == GammaWithoutMovedE(g, expr);
 
 ensures TypeCheckE(g, expr).Type? && expr.Add? ==>
+        TypeCheckE(g, expr).typ.NumT? &&
         TypeCheckE(g, expr.leftA).Type? &&
         TypeCheckE(g, expr.leftA).typ.NumT? &&
         TypeCheckE(GammaWithoutMovedE(g, expr.leftA), expr.rightA).Type? &&
         TypeCheckE(GammaWithoutMovedE(g, expr.leftA), expr.rightA).typ.NumT?;
+ensures TypeCheckE(g, expr).Type? && expr.GT? ==>
+        TypeCheckE(g, expr).typ.BoolT? &&
+        TypeCheckE(g, expr.leftG).Type? &&
+        TypeCheckE(g, expr.leftG).typ.NumT? &&
+        TypeCheckE(GammaWithoutMovedE(g, expr.leftG), expr.rightG).Type? &&
+        TypeCheckE(GammaWithoutMovedE(g, expr.leftG), expr.rightG).typ.NumT?;
 ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
+        TypeCheckE(g, expr).typ.BoolT? &&
         TypeCheckE(g, expr.leftE).Type? &&
         TypeCheckE(GammaWithoutMovedE(g, expr.leftE), expr.rightE).Type? &&
         TypeCheckE(g, expr.leftE).typ ==
@@ -676,6 +691,17 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
         case Type(g1, lt) => if !lt.NumT? then Fail else match TypeCheckE(g1, r) {
           case Type(g2, rt) => if !rt.NumT? then Fail else (
             Type(g2, NumT)
+          )
+          case Fail => Fail
+        }
+        case Fail => Fail
+      }
+
+    case GT(l, r) =>
+      match TypeCheckE(g, l) {
+        case Type(g1, lt) => if !lt.NumT? then Fail else match TypeCheckE(g1, r) {
+          case Type(g2, rt) => if !rt.NumT? then Fail else (
+            Type(g2, BoolT)
           )
           case Fail => Fail
         }
@@ -901,6 +927,21 @@ ensures TypeCheckE(TypeSigma(sig), expr) ==
       ) else (
         assert g == TypeCheckE(TypeSigma(sig), V(Num(l.val.nval + r.val.nval)));
         (sig, V(Num(l.val.nval + r.val.nval)))
+      )
+
+    case GT(l, r) =>
+      if !l.V? then (
+        assert TypeCheckE(TypeSigma(sig), l).Type?;
+        var (sig2, l2) := EvalE(sig, l);
+        assert g == TypeCheckE(TypeSigma(sig2), GT(l2, r));
+        (sig2, GT(l2, r))
+      ) else if !r.V? then (
+        var (sig2, r2) := EvalE(sig, r);
+        assert g == TypeCheckE(TypeSigma(sig2), GT(l, r2));
+        (sig2, GT(l, r2))
+      ) else (
+        assert g == TypeCheckE(TypeSigma(sig), V(Bool(l.val.nval > r.val.nval)));
+        (sig, V(Bool(l.val.nval > r.val.nval)))
       )
 
     case Eq(l, r) =>

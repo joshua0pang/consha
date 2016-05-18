@@ -1,0 +1,6 @@
+var n: Num = 0;
+var s: Num = 0;
+while (6 > n) {
+  s = s + n;
+  n = n + 1;
+}

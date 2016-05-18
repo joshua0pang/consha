@@ -9,3 +9,4 @@ while.exe: while.dfy ReadFileNative.cs
 test: while.exe
 	mono while.exe ex1.whl
 	mono while.exe ex2.whl
+	mono while.exe ex3.whl
