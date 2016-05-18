@@ -2,8 +2,10 @@ datatype Option<T> = None | Some(val: T)
 
 datatype Type = NumT
               | BoolT
+              | RefT(t: Type)
 datatype Value = Num(nval: int)
               | Bool(bval: bool)
+              | Ref(l: nat, t: Type)
 datatype Expr = V(val: Value)
               | Var(name: string)
               | Add(leftA: Expr, rightA: Expr)
@@ -369,7 +371,7 @@ ensures GammaExtends(gamma1, gamma2) ==> forall x :: x in gamma1 ==> x in gamma2
 }
 
 predicate method MoveType(t: Type) {
-  false
+  t.RefT?
 }
 
 predicate GammaDeclarationsE(g: Gamma, expr: Expr) {
@@ -524,18 +526,25 @@ requires x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
 ensures x in GammaWithoutMovedS(g, Seq(s1,s2));
 {
   assert x in g;
-  assert !(x in ReferencedVarsSDec(s1, 0) && MoveType(g[x]));
   assert x !in ConsumedVarsS(s1, 0);
-
-  assert !(x in ReferencedVarsSDec(s2, 0) && MoveType(g[x]));
   assert x !in ConsumedVarsS(s2, 0);
-
   assert x !in ConsumedVarsS(Seq(s1, s2), 0);
 
-  true
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsSDec(s1, 0);
+    assert x !in ReferencedVarsSDec(s2, 0);
+    assert x !in (set y | y in ReferencedVarsS(s2) && y !in ScopedVars(s1) :: y);
+    assert x !in ReferencedVarsSDec(Seq(s1, s2), 0);
+    assert x in GammaWithoutMovedS(g, Seq(s1,s2));
+    true
+  ) else (
+    assert x in GammaWithoutMovedS(g, Seq(s1,s2));
+    true
+  )
 }
 
 predicate GammaWithoutMovedSeqDistributionStr2(g: Gamma, s1: Stmt, s2: Stmt, x: string)
+requires g !! ScopedVars(s1);
 requires x in GammaWithoutMovedS(g, Seq(s1,s2));
 ensures x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
 {
@@ -546,19 +555,25 @@ ensures x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
   assert x !in ConsumedVarsS(s1, 0);
   assert x !in ConsumedVarsS(s2, 0);
 
-  assert MoveType(g[x]) ==> x !in ReferencedVarsSDec(Seq(s1, s2), 0);
-  assert MoveType(g[x]) ==> x !in ReferencedVarsS(s1) +
-      (set x | x in ReferencedVarsS(s2) && x !in ScopedVars(s1) :: x);
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsSDec(Seq(s1, s2), 0);
+    assert x !in ReferencedVarsS(s1) + (set x | x in ReferencedVarsS(s2) && x !in ScopedVars(s1) :: x);
 
-  assert MoveType(g[x]) ==> x !in ReferencedVarsS(s1);
-  assert MoveType(g[x]) ==> x !in ReferencedVarsS(s2) || x in ScopedVars(s1);
-
-  assert !(x in ReferencedVarsSDec(s1, 0) && MoveType(g[x]));
-  assert !(x in ReferencedVarsSDec(s2, 0) && MoveType(g[x]));
-  true
+    assert x !in ReferencedVarsS(s1);
+    assert x in GammaWithoutMovedS(g, s1);
+    assert x !in ReferencedVarsS(s2) || x in ScopedVars(s1);
+    assert x !in ScopedVars(s1);
+    assert x !in ReferencedVarsS(s2);
+    assert x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+    true
+  ) else (
+    assert x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
+    true
+  )
 }
 
 lemma GammaWithoutMovedSeqDistribution(g: Gamma, s1: Stmt, s2: Stmt)
+requires g !! ScopedVars(s1);
 ensures GammaWithoutMovedS(g, Seq(s1,s2)) == GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2);
 {
   assert forall x :: x in GammaWithoutMovedS(GammaWithoutMovedS(g, s1), s2)
@@ -573,10 +588,19 @@ predicate GammaWithoutMovedWhileDistributionStr1(g: Gamma, con: Expr, body: Stmt
 requires x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body));
 ensures x in GammaWithoutMovedS(g, While(con, body));
 {
+  assert x in GammaWithoutMovedE(g, con);
   assert x in g;
   assert x !in ConsumedVarsS(body, 0);
   assert x !in ConsumedVarsS(While(con, body), 0);
-  true
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsE(con);
+    assert x !in ReferencedVarsS(body);
+    assert x in GammaWithoutMovedS(g, While(con, body));
+    true
+  ) else (
+    assert x in GammaWithoutMovedS(g, While(con, body));
+    true
+  )
 }
 
 predicate GammaWithoutMovedWhileDistributionStr2(g: Gamma, con: Expr, body: Stmt, x: string)
@@ -587,7 +611,20 @@ ensures x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWitho
   assert x !in ConsumedVarsS(While(con, body), 0);
   assert x !in ConsumedVarsS(body, 1);
   assert x !in ConsumedVarsS(body, 0);
-  true
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsS(While(con, body));
+    assert x !in ReferencedVarsSDec(While(con, body), 0);
+    assert x !in ReferencedVarsE(con) + ReferencedVarsS(body);
+    assert x !in ReferencedVarsE(con);
+    assert x !in ReferencedVarsS(body);
+    assert x in GammaWithoutMovedE(g, con);
+    assert x in GammaWithoutMovedS(GammaWithoutMovedE(g, con), body);
+    assert x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body));
+    true
+  ) else (
+    assert x in GammaJoin(GammaWithoutMovedE(g, con), GammaWithoutMovedS(GammaWithoutMovedE(g, con), body));
+    true
+  )
 }
 
 lemma GammaWithoutMovedWhileDistribution(g: Gamma, con: Expr, body: Stmt)
@@ -610,7 +647,17 @@ ensures x in GammaWithoutMovedS(g, If(cond, the, els));
   assert x !in ConsumedVarsS(the, 0);
   assert x !in ConsumedVarsS(els, 0);
   assert x !in ConsumedVarsS(If(cond, the, els), 0);
-  true
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsE(cond);
+    assert x !in ReferencedVarsS(the);
+    assert x !in ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(If(cond, the, els));
+    assert x in GammaWithoutMovedS(g, If(cond, the, els));
+    true
+  ) else (
+    assert x in GammaWithoutMovedS(g, If(cond, the, els));
+    true
+  )
 }
 
 predicate GammaWithoutMovedIfDistributionStr2(g: Gamma, cond: Expr, the: Stmt, els: Stmt, x: string)
@@ -623,7 +670,19 @@ ensures x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), 
   assert x !in ConsumedVarsS(the, 0) + ConsumedVarsS(els, 0);
   assert x !in ConsumedVarsS(the, 0);
   assert x !in ConsumedVarsS(els, 0);
-  true
+  if MoveType(g[x]) then (
+    assert x !in ReferencedVarsS(If(cond, the, els));
+    assert x !in ReferencedVarsSDec(If(cond, the, els), 0);
+    assert x !in ReferencedVarsE(cond) + ReferencedVarsS(the) + ReferencedVarsS(els);
+    assert x !in ReferencedVarsE(cond);
+    assert x !in ReferencedVarsS(the);
+    assert x !in ReferencedVarsS(els);
+    assert x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els);
+    true
+  ) else (
+    assert x in GammaWithoutMovedS(GammaWithoutMovedS(GammaWithoutMovedE(g, cond), the), els);
+    true
+  )
 }
 
 lemma GammaWithoutMovedIfDistribution(g: Gamma, cond: Expr, the: Stmt, els: Stmt)
@@ -644,6 +703,7 @@ function method TypeCheckV(val: Value): Type
   match val {
     case Num(_) => NumT
     case Bool(_) => BoolT
+    case Ref(_, t) => RefT(t)
   }
 }
 
@@ -653,7 +713,6 @@ ensures TypeCheckE(g, expr).Type? ==>
         GammaDeclarationsE(g, expr);
 ensures TypeCheckE(g, expr).Type? ==>
         TypeCheckE(g, expr).gamma == GammaWithoutMovedE(g, expr);
-
 ensures TypeCheckE(g, expr).Type? && expr.Add? ==>
         TypeCheckE(g, expr).typ.NumT? &&
         TypeCheckE(g, expr.leftA).Type? &&
@@ -669,6 +728,7 @@ ensures TypeCheckE(g, expr).Type? && expr.GT? ==>
 ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
         TypeCheckE(g, expr).typ.BoolT? &&
         TypeCheckE(g, expr.leftE).Type? &&
+        (TypeCheckE(g, expr.leftE).typ.NumT? || TypeCheckE(g, expr.leftE).typ.BoolT?) &&
         TypeCheckE(GammaWithoutMovedE(g, expr.leftE), expr.rightE).Type? &&
         TypeCheckE(g, expr.leftE).typ ==
         TypeCheckE(GammaWithoutMovedE(g, expr.leftE), expr.rightE).typ;
@@ -681,7 +741,13 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
 
     case Var(x) =>
       if x in g then (
-        Type(g, g[x])
+        if MoveType(g[x]) then (
+          var g2 :=  (map y | y in g && x != y :: g[y]);
+          assert g2 == GammaWithoutMovedE(g, expr);
+          Type(g2, g[x])
+        ) else (
+          Type(g, g[x])
+        )
       ) else (
         Fail
       )
@@ -711,7 +777,7 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
     case Eq(l, r) =>
       match TypeCheckE(g, l) {
         case Type(g1, lt) => match TypeCheckE(g1, r) {
-          case Type(g2, rt) => if lt == rt then (
+          case Type(g2, rt) => if !lt.RefT? && lt == rt then (
             Type(g2, BoolT)
           ) else (
             Fail
@@ -733,10 +799,12 @@ ensures TypeCheckS(g, stmt).Some? ==>
         TypeCheckS(g, stmt).val ==
         GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
 ensures TypeCheckS(g, stmt).Some? && stmt.VarDecl? ==>
+        stmt.x !in g &&
         TypeCheckE(g, stmt.vinit).Type? && TypeCheckE(g, stmt.vinit).typ == stmt.vtype;
 ensures TypeCheckS(g, stmt).Some? && stmt.Assign? ==>
-        stmt.y in g && TypeCheckE(g, stmt.expr).Type? &&
-        TypeCheckE(g, stmt.expr).typ == g[stmt.y];
+        TypeCheckE(g, stmt.expr).Type? &&
+        stmt.y in TypeCheckE(g, stmt.expr).gamma &&
+        TypeCheckE(g, stmt.expr).typ == TypeCheckE(g, stmt.expr).gamma[stmt.y];
 ensures TypeCheckS(g, stmt).Some? && stmt.If? ==>
         TypeCheckE(g, stmt.cond).Type? &&
         TypeCheckE(g, stmt.cond).typ == BoolT &&
@@ -776,7 +844,7 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
     case Assign(y, expr) =>
       match TypeCheckE(g, expr) {
         case Type(g2, ct) => (
-          if y !in g || g[y] != ct then None else
+          if y !in g2 || g[y] != ct then None else
             Some(g2[y := ct])
         )
         case Fail => None
@@ -786,7 +854,7 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
       match TypeCheckE(g, con) {
         case Type(g2, ct) => if !ct.BoolT? then None else match TypeCheckS(g2, the) {
           case Some(g3) => match TypeCheckS(g2, els) {
-            case Some(g4) => if !(DeclaredVars(the) !! DeclaredVars(els)) then None else (
+            case Some(g4) => if !(g !! DeclaredVars(the)) || !(g !! DeclaredVars(els)) || !(DeclaredVars(the) !! DeclaredVars(els)) then None else (
               assert g !! DeclaredVars(stmt);
               assert GammaDeclarationsE(g, con);
               assert GammaDeclarationsS(g2, the);
@@ -883,6 +951,7 @@ type Sigma = map<string, Value>
 
 function method SigmaWithoutMovedS(s: Sigma, stmt: Stmt): Sigma
 decreases stmt;
+ensures forall x :: x in SigmaWithoutMovedS(s, stmt) ==> x in s;
 {
   map x | x in s && !(x in ReferencedVarsSDec(stmt, 0) && MoveType(TypeCheckV(s[x])))
                  && !(x in ConsumedVarsS(stmt, 0)) :: s[x]
@@ -898,8 +967,7 @@ ensures forall x :: x in s ==> TypeCheckV(s[x]) == TypeSigma(s)[x];
 function method EvalE(sig: Sigma, expr: Expr): (Sigma, Expr)
 requires !expr.V?;
 requires TypeCheckE(TypeSigma(sig), expr).Type?;
-
-ensures forall x :: x in sig ==> x in EvalE(sig, expr).0;
+ensures forall x :: x in EvalE(sig, expr).0 ==> x in sig && EvalE(sig, expr).0[x] == sig[x];
 ensures TypeCheckE(TypeSigma(sig), expr) ==
         TypeCheckE(TypeSigma(EvalE(sig, expr).0), EvalE(sig, expr).1);
 {
@@ -909,9 +977,23 @@ ensures TypeCheckE(TypeSigma(sig), expr) ==
   match expr {
 
     case Var(x) => (
-      assert TypeCheckE(TypeSigma(sig), V(sig[x])).Type?;
-      assert g == TypeCheckE(TypeSigma(sig), V(sig[x]));
-      (sig, V(sig[x]))
+      assert x in sig;
+      if MoveType(TypeSigma(sig)[x]) then (
+        var sig2 := map y | y in sig && x != y :: sig[y];
+        assert TypeCheckE(TypeSigma(sig2), V(sig[x])).Type?;
+        assert TypeCheckE(TypeSigma(sig2), V(sig[x])).gamma == TypeSigma(sig2);
+        assert x in ReferencedVarsE(expr);
+        assert x !in g.gamma;
+        assert x !in sig2;
+        assert x !in TypeSigma(sig2);
+        assert g.gamma == TypeSigma(sig2);
+        assert g == TypeCheckE(TypeSigma(sig2), V(sig[x]));
+        (sig2, V(sig[x]))
+      ) else (
+        assert TypeCheckE(TypeSigma(sig), V(sig[x])).Type?;
+        assert g == TypeCheckE(TypeSigma(sig), V(sig[x]));
+        (sig, V(sig[x]))
+      )
     )
 
     case Add(l, r) =>
@@ -983,7 +1065,9 @@ ensures x in GammaWithoutMovedS(
 
   if MoveType(g[x]) then (
     assert x !in ReferencedVarsS(stmt);
-    assert x !in ReferencedVarsS(the) +  ReferencedVarsS(els);
+    assert x !in ReferencedVarsSDec(stmt, 0);
+    assert x !in ReferencedVarsE(V(Bool(true))) + ReferencedVarsS(the) + ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(the) + ReferencedVarsS(els);
     assert x !in ReferencedVarsS(the);
     assert x !in ReferencedVarsS(els);
     assert x !in ReferencedVarsS(CleanUp(g, els, the));
@@ -1010,7 +1094,7 @@ ensures x in GammaWithoutMovedS(g, If(V(Bool(true)), the, els));
   var stmt := If(V(Bool(true)), the, els);
   assert x !in ConsumedVarsS(CleanUp(g, els, the), 0);
 
-  assert  ConsumedVarsS(CleanUp(g, els, the), 0) ==
+  assert ConsumedVarsS(CleanUp(g, els, the), 0) ==
       (set x | x in ScopedVars(the)) + (set x | x in ReferencedVarsS(els) && x in g && MoveType(g[x]))
                                      + ConsumedVarsS(els, 1);
   assert x !in (set x | x in ScopedVars(the))
@@ -1018,16 +1102,25 @@ ensures x in GammaWithoutMovedS(g, If(V(Bool(true)), the, els));
              + ConsumedVarsS(els, 1);
   assert x !in (set x | x in ScopedVars(the));
   assert x !in ScopedVars(the);
-  assert x !in ReferencedVarsSDec(CleanUp(g, els, the), 0) || !MoveType(g[x]);
+
+  assert x in GammaWithoutMovedS(g, the);
+
   assert x !in ConsumedVarsS(els, 0);
 
   assert x in GammaUnion(GammaWithoutMovedS(g, the), ScopedVars(the));
   assert x in GammaWithoutMovedS(g, the);
   assert x !in ConsumedVarsS(the, 0);
+  assert x !in ConsumedVarsS(the, 0) + ConsumedVarsS(els, 0);
+  assert x !in ConsumedVarsS(stmt, 0);
   assert x in g;
 
   if MoveType(g[x]) then (
+    assert x !in ReferencedVarsSDec(the, 0);
+    assert x !in ReferencedVarsSDec(CleanUp(g, els, the), 0);
     assert x !in ReferencedVarsS(the);
+    assert x !in ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(the) + ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(stmt);
     assert x in GammaWithoutMovedS(g, stmt);
     true
   ) else (
@@ -1057,7 +1150,8 @@ ensures x in GammaWithoutMovedS(
 
   if MoveType(g[x]) then (
     assert x !in ReferencedVarsS(stmt);
-    assert x !in ReferencedVarsS(the) +  ReferencedVarsS(els);
+    assert ReferencedVarsS(stmt) == ReferencedVarsE(V(Bool(false))) + ReferencedVarsS(the) + ReferencedVarsS(els);
+    assert x !in ReferencedVarsE(V(Bool(false))) + ReferencedVarsS(the) + ReferencedVarsS(els);
     assert x !in ReferencedVarsS(the);
     assert x !in ReferencedVarsS(els);
     assert x !in ReferencedVarsS(CleanUp(g, the, els));
@@ -1092,16 +1186,22 @@ ensures x in GammaWithoutMovedS(g, If(V(Bool(false)), the, els));
              + ConsumedVarsS(the, 1);
   assert x !in (set x | x in ScopedVars(els));
   assert x !in ScopedVars(els);
-  assert x !in ReferencedVarsSDec(CleanUp(g, the, els), 0) || !MoveType(g[x]);
   assert x !in ConsumedVarsS(the, 0);
 
   assert x in GammaUnion(GammaWithoutMovedS(g, els), ScopedVars(els));
   assert x in GammaWithoutMovedS(g, els);
   assert x !in ConsumedVarsS(els, 0);
+  assert x !in ConsumedVarsS(stmt, 0);
   assert x in g;
 
   if MoveType(g[x]) then (
+    assert x !in ReferencedVarsSDec(CleanUp(g, the, els), 0);
+    assert x !in ReferencedVarsS(CleanUp(g, the, els));
+    assert x !in ReferencedVarsE(V(Bool(false)));
+    assert x !in ReferencedVarsS(the);
     assert x !in ReferencedVarsS(els);
+    assert x !in ReferencedVarsE(V(Bool(false))) + ReferencedVarsS(the) + ReferencedVarsS(els);
+    assert x !in ReferencedVarsS(stmt);
     assert x in GammaWithoutMovedS(g, stmt);
     true
   ) else (
@@ -1128,28 +1228,49 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
     case VarDecl(x, vt, vinit) =>
       if !vinit.V? then (
         var (sig2, vinit2) := EvalE(sig, vinit);
+        ghost var vet := TypeCheckE(TypeSigma(sig2), vinit2);
+        assert vet.Type?;
+        assert vet.typ == TypeCheckE(TypeSigma(sig), vinit).typ;
+        assert vet.gamma == TypeCheckE(TypeSigma(sig), vinit).gamma;
+
+        assert vt == vet.typ;
+        assert stmt.x !in TypeSigma(sig);
+        assert stmt.x !in TypeSigma(sig2);
+
         ghost var g2 := TypeCheckS(TypeSigma(sig2), VarDecl(x, vt, vinit2));
         assert g2.Some?;
         assert g == g2.val;
+        assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
         (sig2, VarDecl(x, vt, vinit2))
       ) else (
         ghost var g2 := TypeCheckS(TypeSigma(sig[x := vinit.val]), Skip);
         assert g2.Some?;
         assert g == g2.val;
+        assert forall z :: z in sig[x := vinit.val] ==> z in sig || z in DeclaredVars(stmt);
         (sig[x := vinit.val], Skip)
       )
 
     case Assign(y, expr) =>
       if !expr.V? then (
         var (sig2, expr2) := EvalE(sig, expr);
+        ghost var vet := TypeCheckE(TypeSigma(sig2), expr2);
+        assert vet.Type?;
+        assert vet.typ == TypeCheckE(TypeSigma(sig), expr).typ;
+        assert vet.gamma == TypeCheckE(TypeSigma(sig), expr).gamma;
+        assert stmt.y in TypeSigma(sig);
+        /* assert stmt.y in TypeSigma(sig2); */
+        assert TypeSigma(sig)[y] == vet.typ;
+        assert TypeSigma(sig2)[y] == vet.typ;
         ghost var g2 := TypeCheckS(TypeSigma(sig2), Assign(y, expr2));
         assert g2.Some?;
         assert g == g2.val;
+        assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
         (sig2, Assign(y, expr2))
       ) else (
         ghost var g2 := TypeCheckS(TypeSigma(sig[y := expr.val]), Skip);
         assert g2.Some?;
         assert g == g2.val;
+        assert forall z :: z in sig[y := expr.val] ==> z in sig || z in DeclaredVars(stmt);
         (sig[y := expr.val], Skip)
       )
 
@@ -1159,6 +1280,7 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         ghost var g2 := TypeCheckS(TypeSigma(sig2), If(cond2, the, els));
         assert g2.Some?;
         assert g == g2.val;
+        assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
         (sig2, If(cond2, the, els))
       ) else if cond.val.bval then (
         ghost var gs := TypeSigma(sig);
@@ -1279,6 +1401,7 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
       ghost var g2 := TypeCheckS(TypeSigma(SigmaWithoutMovedS(sig, stmt)), Skip);
       assert g2.Some?;
       assert g == g2.val;
+      assert forall x :: x in SigmaWithoutMovedS(sig, stmt) ==> x in sig || x in DeclaredVars(stmt);
       (SigmaWithoutMovedS(sig, stmt), Skip)
     )
 
@@ -1303,6 +1426,7 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         ghost var g4 := TypeCheckS(TypeSigma(sig2), Seq(s12, s2));
         assert g4.Some?;
         assert g == g4.val;
+        assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
         (sig2, Seq(s12, s2))
       )
 
