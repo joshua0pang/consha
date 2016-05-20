@@ -1,0 +1,7 @@
+var n: Num = 12;
+var s: Ref[Num] = ref(n);
+var t: Ref[Ref[Num]] = ref(s);
+n = *(*(t)) + 1;
+
+var q: Ref[Num] = ref(0);
+*q = 23;

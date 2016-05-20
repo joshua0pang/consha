@@ -16,7 +16,7 @@ datatype Expr = V(val: Value)
               | GT(leftG: Expr, rightG: Expr)
 datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | Assign(y: string, expr: Expr)
-              /* | RefAssign(z: string, rexpr: Expr) */
+              | RefAssign(z: string, rexpr: Expr)
               | If(cond: Expr, the: Stmt, els: Stmt)
               | CleanUp(g: Gamma, refs: Stmt, decls: Stmt)
               | While(wcond: Expr, wbody: Stmt)
@@ -24,6 +24,39 @@ datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | Skip
 
 // --------- Parsing ---------
+
+function LocsE(expr: Expr): set<Loc>
+decreases expr;
+{
+  match expr {
+    case V(val) => match val {
+      case Num(n) => {}
+      case Bool(b) => {}
+      case Ref(l) => {l}
+    }
+    case Var(x) => {}
+    case Deref(re) => LocsE(re)
+    case Alloc(ie) => LocsE(ie)
+    case Add(l, r) => LocsE(l) + LocsE(r)
+    case GT(l, r) =>  LocsE(l) + LocsE(r)
+    case Eq(l, r) =>  LocsE(l) + LocsE(r)
+  }
+}
+
+function LocsS(stmt: Stmt): set<Loc>
+decreases stmt;
+{
+  match stmt {
+    case VarDecl(x, vtype, vinit) => LocsE(vinit)
+    case Assign(y, expr) => LocsE(expr)
+    case RefAssign(z, expr) => LocsE(expr)
+    case If(con, the, els) => LocsE(con) + LocsS(the) + LocsS(els)
+    case CleanUp(g, refs, decls) => {}
+    case While(con, body) => LocsE(con) + LocsS(body)
+    case Seq(s1, s2) => LocsS(s1) + LocsS(s2)
+    case Skip => {}
+  }
+}
 
 function method SatP(f: char -> bool, s: string): Option<(char, string)>
 reads f.reads;
@@ -86,9 +119,21 @@ ensures ParseBoolT(s).Some? ==> |ParseBoolT(s).val.1| < |s|;
 }
 
 function method ParseType(s: string): Option<(Type, string)>
+decreases |s|;
 ensures ParseType(s).Some? ==> |ParseType(s).val.1| < |s|;
 {
-  Or(ParseBoolT(s), ParseNumT(s))
+  var f := SkipWS(KW("Ref", s));
+  if f.None? then Or(ParseBoolT(s), ParseNumT(s)) else (
+    var l := SkipWS(Ch('[', f.val.1));
+    if l.None? then None else (
+      assert |l.val.1| < |s|;
+      var t := ParseType(l.val.1);
+      if t.None? then None else (
+        var r := SkipWS(Ch(']', t.val.1));
+        if r.None? then None else Some((RefT(t.val.0), r.val.1))
+      )
+    )
+  )
 }
 
 function method ParseTrue(s: string): Option<(Value, string)>
@@ -181,62 +226,120 @@ ensures ParseVar(s).Some? ==> LocsE(ParseVar(s).val.0) == {};
   Map(ParseId(s), s => Var(s))
 }
 
+function method SkipComment(s: string): string
+ensures |SkipComment(s)| <= |s|;
+{
+  if |s| == 0 then
+    ""
+  else if s[0] == '\n' then
+    s[1..]
+  else
+    SkipComment(s[1..])
+}
+
 function method SkipWS<A>(s: Option<(A,string)>): Option<(A,string)>
 decreases if s.Some? then |s.val.1| else 0;
 ensures s.Some? <==> SkipWS(s).Some?;
 ensures SkipWS(s).Some? ==> |SkipWS(s).val.1| <= |s.val.1| &&
                             SkipWS(s).val.0 == s.val.0;
 {
-  if s.Some? && |s.val.1| > 0 && (s.val.1[0] == ' ' || s.val.1[0] == '\n' || s.val.1[0] == '\t') then
+  if s.Some? && |s.val.1| > 3 && s.val.1[0] == '/' && s.val.1[1] == '/' then
+    SkipWS(Some((s.val.0, SkipComment(s.val.1[2..]))))
+  else if s.Some? && |s.val.1| > 0 && (s.val.1[0] == ' ' || s.val.1[0] == '\n' || s.val.1[0] == '\t') then
     SkipWS(Some((s.val.0, s.val.1[1..])))
   else
     s
 }
 
-function method ParseAddRec(s: string, n: nat): Option<(Expr, string)>
-decreases n;
-ensures ParseAddRec(s, n).Some? ==> |ParseAddRec(s, n).val.1| < |s|;
-ensures ParseAddRec(s, n).Some? ==> LocsE(ParseAddRec(s, n).val.0) == {};
+function method ParseDeref(s: string, n: nat): Option<(Expr, string)>
+decreases |s|, n;
+requires n >= 1;
+ensures ParseDeref(s, n).Some? ==> |ParseDeref(s, n).val.1| < |s|;
+ensures ParseDeref(s, n).Some? ==> LocsE(ParseDeref(s, n).val.0) == {};
 {
-  var t := SkipWS(Or(ParseVal(s), ParseVar(s)));
-  if n == 0 || t.None? then t else (
-    var p := SkipWS(Ch('+', t.val.1));
-    if p.None? then t else (
-      var r := ParseAddRec(p.val.1, n - 1);
-      if r.None? then t else Some((Add(t.val.0, r.val.0), r.val.1))
+  var t := SkipWS(Ch('*', s));
+  if t.None? then None else (
+    var l := SkipWS(Ch('(', t.val.1));
+    if l.None? then None else (
+      assert |l.val.1| < |s|;
+      var e := ParseExprRec(l.val.1, n - 1);
+      if e.None? then None else (
+        var r := SkipWS(Ch(')', e.val.1));
+        if r.None? then None else (
+          Some((Deref(e.val.0), r.val.1))
+        )
+      )
     )
   )
 }
 
-function method ParseAdd(s: string): Option<(Expr, string)>
-ensures ParseAdd(s).Some? ==> |ParseAdd(s).val.1| < |s|;
-ensures ParseAdd(s).Some? ==> LocsE(ParseAdd(s).val.0) == {};
+function method ParseAlloc(s: string, n: nat): Option<(Expr, string)>
+decreases |s|, n;
+requires n >= 1;
+ensures ParseAlloc(s, n).Some? ==> |ParseAlloc(s, n).val.1| < |s|;
+ensures ParseAlloc(s, n).Some? ==> LocsE(ParseAlloc(s, n).val.0) == {};
 {
-  ParseAddRec(s, 100)
+  var t := SkipWS(KW("ref", s));
+  if t.None? then None else (
+    var l := SkipWS(Ch('(', t.val.1));
+    if l.None? then None else (
+      assert |l.val.1| < |s|;
+      var e := ParseExprRec(l.val.1, n - 1);
+      if e.None? then None else (
+        var r := SkipWS(Ch(')', e.val.1));
+        if r.None? then None else (
+          Some((Alloc(e.val.0), r.val.1))
+        )
+      )
+    )
+  )
+}
+
+function method ParseAddRec(s: string, n: nat): Option<(Expr, string)>
+decreases |s|, n;
+ensures ParseAddRec(s, n).Some? ==> |ParseAddRec(s, n).val.1| < |s|;
+ensures ParseAddRec(s, n).Some? ==> LocsE(ParseAddRec(s, n).val.0) == {};
+{
+  if n < 2 then None else (
+    var t := SkipWS(Or(Or(Or(ParseDeref(s, n - 1),
+                            ParseAlloc(s, n - 1)),
+                          ParseVal(s)),
+                      ParseVar(s)));
+    if t.None? then None else (
+      var p := SkipWS(Ch('+', t.val.1));
+      if p.None? then t else (
+        var r := ParseAddRec(p.val.1, n - 1);
+        if r.None? then t else Some((Add(t.val.0, r.val.0), r.val.1))
+      )
+    )
+  )
 }
 
 function method ParseExprRec(s: string, n: nat): Option<(Expr, string)>
-decreases n;
+decreases |s|, n;
 ensures ParseExprRec(s, n).Some? ==> |ParseExprRec(s, n).val.1| < |s|;
 ensures ParseExprRec(s, n).Some? ==> LocsE(ParseExprRec(s, n).val.0) == {};
 {
-  var t := ParseAdd(s);
-  if n == 0 || t.None? then t else (
-    var p := SkipWS(Or(KW(">", t.val.1), KW("==", t.val.1)));
-    if p.None? then t else (
-      var r := ParseExprRec(p.val.1, n - 1);
-      if r.None? then t else Some((
-        if p.val.0 == ">" then GT(t.val.0, r.val.0) else Eq(t.val.0, r.val.0),
-        r.val.1))
+  if n == 0 then None else (
+    var t := ParseAddRec(s, n - 1);
+    if t.None? then None else (
+      var p := SkipWS(Or(KW(">", t.val.1), KW("==", t.val.1)));
+      if p.None? then t else (
+        var r := ParseExprRec(p.val.1, n - 1);
+        if r.None? then t else Some((
+          if p.val.0 == ">" then GT(t.val.0, r.val.0) else Eq(t.val.0, r.val.0),
+          r.val.1))
+      )
     )
   )
 }
 
 function method ParseExpr(s: string): Option<(Expr, string)>
+decreases |s|;
 ensures ParseExpr(s).Some? ==> |ParseExpr(s).val.1| < |s|;
 ensures ParseExpr(s).Some? ==> LocsE(ParseExpr(s).val.0) == {};
 {
-  ParseExprRec(s, 100)
+  ParseExprRec(s, 10000)
 }
 
 function method ParseBlock(s: string, n: nat): Option<(Stmt, string)>
@@ -292,6 +395,22 @@ ensures ParseAssign(s).Some? ==> LocsS(ParseAssign(s).val.0) == {};
         if s.None? then None else Some((Assign(id.val.0, i.val.0), s.val.1)))))
 }
 
+function method ParseRefAssign(s: string): Option<(Stmt, string)>
+ensures ParseRefAssign(s).Some? ==> |ParseRefAssign(s).val.1| < |s|;
+ensures ParseRefAssign(s).Some? ==> LocsS(ParseRefAssign(s).val.0) == {};
+{
+  var t := SkipWS(Ch('*', s));
+  if t.None? then None else (
+    var id := SkipWS(ParseId(t.val.1));
+    if id.None? then None else (
+      var e := SkipWS(Ch('=', id.val.1));
+      if e.None? then None else (
+        var i := ParseExpr(e.val.1);
+        if i.None? then None else (
+          var s := SkipWS(Ch(';', i.val.1));
+          if s.None? then None else Some((RefAssign(id.val.0, i.val.0), s.val.1))))))
+}
+
 function method ParseIf(s: string, n: nat): Option<(Stmt, string)>
 decreases |s|, n;
 ensures ParseIf(s, n).Some? ==> |ParseIf(s, n).val.1| < |s|;
@@ -345,9 +464,10 @@ ensures ParseProgRec(s, n).Some? ==> |ParseProgRec(s, n).val.1| < |s|;
 ensures ParseProgRec(s, n).Some? ==> LocsS(ParseProgRec(s, n).val.0) == {};
 {
   if n == 0 then None else (
-    var s1 := Or(Or(Or(ParseVarDecl(s),
-                       ParseIf(s, n - 1)),
-                    ParseWhile(s, n - 1)),
+    var s1 := Or(Or(Or(Or(ParseVarDecl(s),
+                          ParseIf(s, n - 1)),
+                       ParseWhile(s, n - 1)),
+                    ParseRefAssign(s)),
                  ParseAssign(s));
     if s1.None? then None else (
       var s2 := ParseProgRec(s1.val.1, n - 1);
@@ -415,6 +535,7 @@ decreases stmt;
   match stmt {
     case VarDecl(x, vtype, vinit) => map[x := vtype]
     case Assign(y, expr) => map[]
+    case RefAssign(z, expr) => map[]
     case If(con, the, els) => GammaUnion(DeclaredVars(the), DeclaredVars(els))
     case CleanUp(g, refs, decls) => map[]
     case While(con, body) => map[]
@@ -430,6 +551,7 @@ ensures forall x :: x in ScopedVars(stmt) ==> x in DeclaredVars(stmt);
   match stmt {
     case VarDecl(x, vtype, vinit) => map[x := vtype]
     case Assign(y, expr) => map[]
+    case RefAssign(z, expr) => map[]
     case If(con, the, els) => map[]
     case CleanUp(g, refs, decls) => map[]
     case While(con, body) => map[]
@@ -464,6 +586,7 @@ decreases stmt, n;
     case VarDecl(x, vtype, vinit) =>
       ReferencedVarsE(vinit)
     case Assign(y, expr) => ReferencedVarsE(expr) - {y}
+    case RefAssign(z, expr) => ReferencedVarsE(expr)
     case If(con, the, els) =>
       ReferencedVarsE(con) + ReferencedVarsS(the) + ReferencedVarsS(els)
     case CleanUp(g, refs, decls) => {}
@@ -487,6 +610,10 @@ ensures ConsumedVarsS(stmt, n) == ConsumedVarsS(stmt, n2);
       true
     )
     case Assign(y, expr) => (
+      assert res == res2;
+      true
+    )
+    case RefAssign(z, expr) => (
       assert res == res2;
       true
     )
@@ -525,6 +652,7 @@ decreases stmt, n;
   match stmt {
     case VarDecl(x, vtype, vinit) => {}
     case Assign(y, expr) => {}
+    case RefAssign(z, expr) => {}
     case If(con, the, els) => ConsumedVarsS(the, 1) + ConsumedVarsS(els, 1)
     case CleanUp(g, refs, decls) =>
       (set x | x in ScopedVars(decls)) + (set x | x in ReferencedVarsS(refs) && x in g && MoveType(g[x]))
@@ -852,6 +980,11 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Assign? ==>
         TypeCheckE(g, stmt.expr).Type? &&
         stmt.y in TypeCheckE(g, stmt.expr).gamma &&
         TypeCheckE(g, stmt.expr).typ == TypeCheckE(g, stmt.expr).gamma[stmt.y];
+ensures TypeCheckS(g, stmt).Some? && stmt.RefAssign? ==>
+        TypeCheckE(g, stmt.rexpr).Type? &&
+        stmt.z in TypeCheckE(g, stmt.rexpr).gamma &&
+        TypeCheckE(g, stmt.rexpr).gamma[stmt.z].RefT? &&
+        TypeCheckE(g, stmt.rexpr).gamma[stmt.z].t == TypeCheckE(g, stmt.rexpr).typ;
 ensures TypeCheckS(g, stmt).Some? && stmt.If? ==>
         TypeCheckE(g, stmt.cond).Type? &&
         TypeCheckE(g, stmt.cond).typ == BoolT &&
@@ -891,8 +1024,17 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
     case Assign(y, expr) =>
       match TypeCheckE(g, expr) {
         case Type(g2, ct) => (
-          if y !in g2 || g[y] != ct then None else
+          if y !in g2 || g2[y] != ct then None else
             Some(g2[y := ct])
+        )
+        case Fail => None
+      }
+
+    case RefAssign(z, expr) =>
+      match TypeCheckE(g, expr) {
+        case Type(g2, ct) => (
+          if z !in g2 || !g2[z].RefT? || g2[z].t != ct then None else
+            Some(g2)
         )
         case Fail => None
       }
@@ -997,6 +1139,10 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
 type Sigma = map<string, Value>
 type Heap = map<Loc, Value>
 
+function LocsH(h: Heap): set<Loc> {
+  (set x | x in h && h[x].Ref? :: h[x].l)
+}
+
 function method SigmaWithoutMovedS(s: Sigma, stmt: Stmt): Sigma
 decreases stmt;
 ensures forall x :: x in SigmaWithoutMovedS(s, stmt) ==> x in s;
@@ -1010,42 +1156,6 @@ ensures forall x :: x in s <==> x in TypeSigma(s);
 ensures forall x :: x in s ==> TypeCheckV(s[x]) == TypeSigma(s)[x];
 {
   map x | x in s :: TypeCheckV(s[x])
-}
-
-function LocsH(h: Heap): set<Loc> {
-  (set x | x in h && h[x].Ref? :: h[x].l)
-}
-
-function LocsE(expr: Expr): set<Loc>
-decreases expr;
-{
-  match expr {
-    case V(val) => match val {
-      case Num(n) => {}
-      case Bool(b) => {}
-      case Ref(l) => {l}
-    }
-    case Var(x) => {}
-    case Deref(re) => LocsE(re)
-    case Alloc(ie) => LocsE(ie)
-    case Add(l, r) => LocsE(l) + LocsE(r)
-    case GT(l, r) =>  LocsE(l) + LocsE(r)
-    case Eq(l, r) =>  LocsE(l) + LocsE(r)
-  }
-}
-
-function LocsS(stmt: Stmt): set<Loc>
-decreases stmt;
-{
-  match stmt {
-    case VarDecl(x, vtype, vinit) => LocsE(vinit)
-    case Assign(y, expr) => LocsE(expr)
-    case If(con, the, els) => LocsE(con) + LocsS(the) + LocsS(els)
-    case CleanUp(g, refs, decls) => {}
-    case While(con, body) => LocsE(con) + LocsS(body)
-    case Seq(s1, s2) => LocsS(s1) + LocsS(s2)
-    case Skip => {}
-  }
 }
 
 function LocsSig(sig: Sigma): set<Loc> {
@@ -1405,8 +1515,25 @@ predicate LocsWhile(cond: Expr, body: Stmt, x: Loc)
 requires x in LocsS(If(cond, Seq(If(V(Bool(true)), body, Skip), While(cond, body)), Skip));
 ensures x in LocsS(While(cond, body));
 {
-  assert x in LocsE(cond) + LocsS(body);
-  true
+  assert x in LocsS(If(cond, Seq(If(V(Bool(true)), body, Skip), While(cond, body)), Skip));
+  assert x in LocsE(cond) + LocsS(Seq(If(V(Bool(true)), body, Skip), While(cond, body))) + LocsS(Skip);
+  if x in LocsE(cond) then (
+    assert x in LocsE(cond) + LocsS(body);
+    assert x in LocsS(While(cond, body));
+    true
+  ) else (
+    assert x in LocsS(Seq(If(V(Bool(true)), body, Skip), While(cond, body)));
+    assert x in LocsS(If(V(Bool(true)), body, Skip)) + LocsS(While(cond, body));
+    if x in LocsS(If(V(Bool(true)), body, Skip)) then (
+      assert x in LocsE(V(Bool(true))) + LocsS(body) + LocsS(Skip);
+      assert x in LocsS(body);
+      assert x in LocsE(cond) + LocsS(body);
+      assert x in LocsS(While(cond, body));
+      true
+    ) else (
+      true
+    )
+  )
 }
 
 function method EvalS(h: Heap, sig: Sigma, stmt: Stmt): (Heap, Sigma, Stmt)
@@ -1477,6 +1604,35 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         assert forall z :: z in sig[y := expr.val] ==> z in sig || z in DeclaredVars(stmt);
         assert HeapDeclarationsS(h, sig[y := expr.val], Skip);
         (h, sig[y := expr.val], Skip)
+      )
+
+    case RefAssign(z, expr) =>
+      if !expr.V? then (
+        var (h2, sig2, expr2) := EvalE(h, sig, expr);
+        ghost var vet := TypeCheckE(TypeSigma(sig2), expr2);
+        assert vet.Type?;
+        assert vet.typ == TypeCheckE(TypeSigma(sig), expr).typ;
+        assert vet.gamma == TypeCheckE(TypeSigma(sig), expr).gamma;
+        assert stmt.z in TypeSigma(sig);
+        assert TypeSigma(sig)[z].RefT? && TypeSigma(sig)[z].t == vet.typ;
+        assert TypeSigma(sig2)[z].RefT? && TypeSigma(sig2)[z].t == vet.typ;
+        ghost var g2 := TypeCheckS(TypeSigma(sig2), RefAssign(z, expr2));
+        assert g2.Some?;
+        assert g == g2.val;
+        assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
+        assert HeapDeclarationsS(h2, sig2, RefAssign(z, expr2));
+        (h2, sig2, RefAssign(z, expr2))
+      ) else (
+        ghost var g2 := TypeCheckS(TypeSigma(sig), Skip);
+        assert g2.Some?;
+        assert g == g2.val;
+        assert forall x :: x in sig ==> x in sig || x in DeclaredVars(stmt);
+        assert z in sig;
+        assert sig[z].Ref?;
+        var l: Loc := sig[z].l;
+        assert l in h;
+        assert HeapDeclarationsS(h[l := expr.val], sig, Skip);
+        (h[l := expr.val], sig, Skip)
       )
 
     case If(cond, the, els) =>
@@ -1735,5 +1891,7 @@ method Main() {
   print n;
   print " steps.\n\nFinal environment:\n";
   print env;
+  print "\n\nFinal heap:\n";
+  print h;
   print "\n";
 }
