@@ -2,15 +2,21 @@ datatype Option<T> = None | Some(val: T)
 
 datatype Type = NumT
               | BoolT
+              | RefT(t: Type)
+datatype Loc  = Loc(l: int, t: Type)
 datatype Value = Num(nval: int)
               | Bool(bval: bool)
+              | Ref(l: Loc)
 datatype Expr = V(val: Value)
               | Var(name: string)
+              | Deref(re: Expr)
+              | Alloc(ie: Expr)
               | Add(leftA: Expr, rightA: Expr)
               | Eq(leftE: Expr, rightE: Expr)
               | GT(leftG: Expr, rightG: Expr)
 datatype Stmt = VarDecl(x: string, vtype: Type, vinit: Expr)
               | Assign(y: string, expr: Expr)
+              /* | RefAssign(z: string, rexpr: Expr) */
               | If(cond: Expr, the: Stmt, els: Stmt)
               | CleanUp(g: Gamma, refs: Stmt, decls: Stmt)
               | While(wcond: Expr, wbody: Stmt)
@@ -61,8 +67,8 @@ ensures Map(i, f).Some? ==> |Map(i, f).val.1| == |i.val.1|;
 
 function method Or<A>(a: Option<(A, string)>, b: Option<(A, string)>):  Option<(A, string)>
 ensures Or(a, b).Some? ==> a.Some? || b.Some?;
-ensures Or(a, b).Some? && a.Some? ==> |Or(a, b).val.1| == |a.val.1|;
-ensures Or(a, b).Some? && !a.Some? ==> |Or(a, b).val.1| == |b.val.1|;
+ensures Or(a, b).Some? && a.Some? ==> Or(a, b) == a;
+ensures Or(a, b).Some? && !a.Some? ==> Or(a, b) == b;
 {
   if a.Some? then a else b
 }
@@ -134,6 +140,7 @@ ensures ParseNum(s).Some? ==> |ParseNum(s).val.1| < |s|;
 
 function method ParseVal(s: string): Option<(Expr, string)>
 ensures ParseVal(s).Some? ==> |ParseVal(s).val.1| < |s|;
+ensures ParseVal(s).Some? ==> LocsE(ParseVal(s).val.0) == {};
 {
   Map(Or(Or(ParseTrue(s),
             ParseFalse(s)),
@@ -169,6 +176,7 @@ ensures ParseId(s).Some? ==> |ParseId(s).val.1| < |s|;
 
 function method ParseVar(s: string): Option<(Expr, string)>
 ensures ParseVar(s).Some? ==> |ParseVar(s).val.1| < |s|;
+ensures ParseVar(s).Some? ==> LocsE(ParseVar(s).val.0) == {};
 {
   Map(ParseId(s), s => Var(s))
 }
@@ -176,7 +184,8 @@ ensures ParseVar(s).Some? ==> |ParseVar(s).val.1| < |s|;
 function method SkipWS<A>(s: Option<(A,string)>): Option<(A,string)>
 decreases if s.Some? then |s.val.1| else 0;
 ensures s.Some? <==> SkipWS(s).Some?;
-ensures SkipWS(s).Some? ==> |SkipWS(s).val.1| <= |s.val.1|;
+ensures SkipWS(s).Some? ==> |SkipWS(s).val.1| <= |s.val.1| &&
+                            SkipWS(s).val.0 == s.val.0;
 {
   if s.Some? && |s.val.1| > 0 && (s.val.1[0] == ' ' || s.val.1[0] == '\n' || s.val.1[0] == '\t') then
     SkipWS(Some((s.val.0, s.val.1[1..])))
@@ -187,6 +196,7 @@ ensures SkipWS(s).Some? ==> |SkipWS(s).val.1| <= |s.val.1|;
 function method ParseAddRec(s: string, n: nat): Option<(Expr, string)>
 decreases n;
 ensures ParseAddRec(s, n).Some? ==> |ParseAddRec(s, n).val.1| < |s|;
+ensures ParseAddRec(s, n).Some? ==> LocsE(ParseAddRec(s, n).val.0) == {};
 {
   var t := SkipWS(Or(ParseVal(s), ParseVar(s)));
   if n == 0 || t.None? then t else (
@@ -200,6 +210,7 @@ ensures ParseAddRec(s, n).Some? ==> |ParseAddRec(s, n).val.1| < |s|;
 
 function method ParseAdd(s: string): Option<(Expr, string)>
 ensures ParseAdd(s).Some? ==> |ParseAdd(s).val.1| < |s|;
+ensures ParseAdd(s).Some? ==> LocsE(ParseAdd(s).val.0) == {};
 {
   ParseAddRec(s, 100)
 }
@@ -207,6 +218,7 @@ ensures ParseAdd(s).Some? ==> |ParseAdd(s).val.1| < |s|;
 function method ParseExprRec(s: string, n: nat): Option<(Expr, string)>
 decreases n;
 ensures ParseExprRec(s, n).Some? ==> |ParseExprRec(s, n).val.1| < |s|;
+ensures ParseExprRec(s, n).Some? ==> LocsE(ParseExprRec(s, n).val.0) == {};
 {
   var t := ParseAdd(s);
   if n == 0 || t.None? then t else (
@@ -222,6 +234,7 @@ ensures ParseExprRec(s, n).Some? ==> |ParseExprRec(s, n).val.1| < |s|;
 
 function method ParseExpr(s: string): Option<(Expr, string)>
 ensures ParseExpr(s).Some? ==> |ParseExpr(s).val.1| < |s|;
+ensures ParseExpr(s).Some? ==> LocsE(ParseExpr(s).val.0) == {};
 {
   ParseExprRec(s, 100)
 }
@@ -229,6 +242,7 @@ ensures ParseExpr(s).Some? ==> |ParseExpr(s).val.1| < |s|;
 function method ParseBlock(s: string, n: nat): Option<(Stmt, string)>
 decreases |s|, n;
 ensures ParseBlock(s, n).Some? ==> |ParseBlock(s, n).val.1| < |s|;
+ensures ParseBlock(s, n).Some? ==> LocsS(ParseBlock(s, n).val.0) == {};
 {
   var l := SkipWS(Ch('{', s));
   if l.None? then None else (
@@ -246,6 +260,7 @@ ensures ParseBlock(s, n).Some? ==> |ParseBlock(s, n).val.1| < |s|;
 
 function method ParseVarDecl(s: string): Option<(Stmt, string)>
 ensures ParseVarDecl(s).Some? ==> |ParseVarDecl(s).val.1| < |s|;
+ensures ParseVarDecl(s).Some? ==> LocsS(ParseVarDecl(s).val.0) == {};
 {
   var v := SkipWS(KW("var", s));
   if v.None? then None else (
@@ -265,6 +280,7 @@ ensures ParseVarDecl(s).Some? ==> |ParseVarDecl(s).val.1| < |s|;
 
 function method ParseAssign(s: string): Option<(Stmt, string)>
 ensures ParseAssign(s).Some? ==> |ParseAssign(s).val.1| < |s|;
+ensures ParseAssign(s).Some? ==> LocsS(ParseAssign(s).val.0) == {};
 {
   var id := SkipWS(ParseId(s));
   if id.None? then None else (
@@ -279,6 +295,7 @@ ensures ParseAssign(s).Some? ==> |ParseAssign(s).val.1| < |s|;
 function method ParseIf(s: string, n: nat): Option<(Stmt, string)>
 decreases |s|, n;
 ensures ParseIf(s, n).Some? ==> |ParseIf(s, n).val.1| < |s|;
+ensures ParseIf(s, n).Some? ==> LocsS(ParseIf(s, n).val.0) == {};
 {
   var ifk := SkipWS(KW("if", s));
   if ifk.None? then None else (
@@ -291,16 +308,24 @@ ensures ParseIf(s, n).Some? ==> |ParseIf(s, n).val.1| < |s|;
           var the := ParseBlock(rc.val.1, n);
           if the.None? then None else (
             var elskw := SkipWS(KW("else", the.val.1));
+            assert LocsE(con.val.0) == {};
+            assert LocsS(the.val.0) == {};
             if elskw.None? then (
+              assert LocsS(Skip) == {};
+              assert LocsS(If(con.val.0, the.val.0, Skip)) == {};
               Some((If(con.val.0, the.val.0, Skip), the.val.1))
             ) else (
               var els := ParseBlock(elskw.val.1, n);
-              if els.None? then None else Some((If(con.val.0, the.val.0, els.val.0), els.val.1))))))))
+              if els.None? then None else (
+                assert LocsS(els.val.0) == {};
+                assert LocsS(If(con.val.0, the.val.0, els.val.0)) == {};
+                Some((If(con.val.0, the.val.0, els.val.0), els.val.1)))))))))
 }
 
 function method ParseWhile(s: string, n: nat): Option<(Stmt, string)>
 decreases |s|, n;
 ensures ParseWhile(s, n).Some? ==> |ParseWhile(s, n).val.1| < |s|;
+ensures ParseWhile(s, n).Some? ==> LocsS(ParseWhile(s, n).val.0) == {};
 {
   var wk := SkipWS(KW("while", s));
   if wk.None? then None else (
@@ -317,6 +342,7 @@ ensures ParseWhile(s, n).Some? ==> |ParseWhile(s, n).val.1| < |s|;
 function method ParseProgRec(s: string, n: nat): Option<(Stmt, string)>
 decreases |s|, n;
 ensures ParseProgRec(s, n).Some? ==> |ParseProgRec(s, n).val.1| < |s|;
+ensures ParseProgRec(s, n).Some? ==> LocsS(ParseProgRec(s, n).val.0) == {};
 {
   if n == 0 then None else (
     var s1 := Or(Or(Or(ParseVarDecl(s),
@@ -334,7 +360,9 @@ class FileSystem {
   extern static method ReadCmdLine() returns (contents: array<char>)
 }
 
-method Parse() returns (res: Option<Stmt>) {
+method Parse() returns (res: Option<Stmt>)
+ensures res.Some? ==> LocsS(res.val) == {};
+{
   var contents: array<char> := FileSystem.ReadCmdLine();
   if contents == null { return None; }
   var pres := SkipWS(ParseProgRec(contents[..], 10000));
@@ -369,7 +397,7 @@ ensures GammaExtends(gamma1, gamma2) ==> forall x :: x in gamma1 ==> x in gamma2
 }
 
 predicate method MoveType(t: Type) {
-  false
+  t.RefT?
 }
 
 predicate GammaDeclarationsE(g: Gamma, expr: Expr) {
@@ -415,6 +443,8 @@ function method ReferencedVarsE(expr: Expr): set<string>
   match expr {
     case V(val) => {}
     case Var(x) => {x}
+    case Deref(re) => ReferencedVarsE(re)
+    case Alloc(ie) => ReferencedVarsE(ie)
     case Add(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
     case GT(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
     case Eq(l, r) => ReferencedVarsE(l) + ReferencedVarsE(r)
@@ -701,6 +731,7 @@ function method TypeCheckV(val: Value): Type
   match val {
     case Num(_) => NumT
     case Bool(_) => BoolT
+    case Ref(l) => RefT(l.t)
   }
 }
 
@@ -710,6 +741,13 @@ ensures TypeCheckE(g, expr).Type? ==>
         GammaDeclarationsE(g, expr);
 ensures TypeCheckE(g, expr).Type? ==>
         TypeCheckE(g, expr).gamma == GammaWithoutMovedE(g, expr);
+ensures TypeCheckE(g, expr).Type? && expr.Deref? ==>
+        TypeCheckE(g, expr.re).Type? &&
+        TypeCheckE(g, expr.re).typ.RefT? &&
+        TypeCheckE(g, expr.re).typ.t == TypeCheckE(g, expr).typ;
+ensures TypeCheckE(g, expr).Type? && expr.Alloc? ==>
+        TypeCheckE(g, expr.ie).Type? &&
+        TypeCheckE(g, expr).typ == RefT(TypeCheckE(g, expr.ie).typ);
 ensures TypeCheckE(g, expr).Type? && expr.Add? ==>
         TypeCheckE(g, expr).typ.NumT? &&
         TypeCheckE(g, expr.leftA).Type? &&
@@ -749,6 +787,18 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
         Fail
       )
 
+    case Deref(re) =>
+      match TypeCheckE(g, re) {
+        case Type(g2, rt) => if !rt.RefT? then Fail else Type(g2, rt.t)
+        case Fail => Fail
+      }
+
+    case Alloc(ie) =>
+      match TypeCheckE(g, ie) {
+        case Type(g2, it) => Type(g2, RefT(it))
+        case Fail => Fail
+      }
+
     case Add(l, r) =>
       match TypeCheckE(g, l) {
         case Type(g1, lt) => if !lt.NumT? then Fail else match TypeCheckE(g1, r) {
@@ -774,7 +824,7 @@ ensures TypeCheckE(g, expr).Type? && expr.Eq? ==>
     case Eq(l, r) =>
       match TypeCheckE(g, l) {
         case Type(g1, lt) => match TypeCheckE(g1, r) {
-          case Type(g2, rt) => if lt == rt then (
+          case Type(g2, rt) => if !lt.RefT? && lt == rt then (
             Type(g2, BoolT)
           ) else (
             Fail
@@ -945,6 +995,7 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
 // --------- Evaluating ---------
 
 type Sigma = map<string, Value>
+type Heap = map<Loc, Value>
 
 function method SigmaWithoutMovedS(s: Sigma, stmt: Stmt): Sigma
 decreases stmt;
@@ -961,12 +1012,94 @@ ensures forall x :: x in s ==> TypeCheckV(s[x]) == TypeSigma(s)[x];
   map x | x in s :: TypeCheckV(s[x])
 }
 
-function method EvalE(sig: Sigma, expr: Expr): (Sigma, Expr)
+function LocsH(h: Heap): set<Loc> {
+  (set x | x in h && h[x].Ref? :: h[x].l)
+}
+
+function LocsE(expr: Expr): set<Loc>
+decreases expr;
+{
+  match expr {
+    case V(val) => match val {
+      case Num(n) => {}
+      case Bool(b) => {}
+      case Ref(l) => {l}
+    }
+    case Var(x) => {}
+    case Deref(re) => LocsE(re)
+    case Alloc(ie) => LocsE(ie)
+    case Add(l, r) => LocsE(l) + LocsE(r)
+    case GT(l, r) =>  LocsE(l) + LocsE(r)
+    case Eq(l, r) =>  LocsE(l) + LocsE(r)
+  }
+}
+
+function LocsS(stmt: Stmt): set<Loc>
+decreases stmt;
+{
+  match stmt {
+    case VarDecl(x, vtype, vinit) => LocsE(vinit)
+    case Assign(y, expr) => LocsE(expr)
+    case If(con, the, els) => LocsE(con) + LocsS(the) + LocsS(els)
+    case CleanUp(g, refs, decls) => {}
+    case While(con, body) => LocsE(con) + LocsS(body)
+    case Seq(s1, s2) => LocsS(s1) + LocsS(s2)
+    case Skip => {}
+  }
+}
+
+function LocsSig(sig: Sigma): set<Loc> {
+  (set x | x in sig && sig[x].Ref? :: sig[x].l)
+}
+
+predicate HeapWellDefined(h: Heap)
+{
+  forall x :: x in h ==> x.t == TypeCheckV(h[x])
+}
+
+predicate HeapDeclarationsE(h: Heap, sig: Sigma, e: Expr)
+ensures HeapDeclarationsE(h, sig, e) ==> forall x :: x in LocsH(h) ==> x in h;
+ensures HeapDeclarationsE(h, sig, e) ==> forall x :: x in LocsSig(sig) ==> x in h;
+ensures HeapDeclarationsE(h, sig, e) ==> forall x :: x in LocsE(e) ==> x in h;
+{
+  forall x :: x in LocsH(h) + LocsSig(sig) + LocsE(e) ==> x in h
+}
+
+predicate HeapDeclarationsAlloc(h: Heap, ie: Expr, newL: Loc, x: Loc)
+requires ie.V?;
+requires forall y :: y in LocsH(h) ==> y in h;
+requires forall y :: y in LocsE(ie) ==> y in h;
+requires newL == Loc(|h|, TypeCheckV(ie.val));
+requires x in LocsH(h[newL := ie.val]);
+ensures x in h[newL := ie.val];
+{
+  if x == newL then (
+    assert x in h[newL := ie.val];
+    true
+  ) else if x in LocsH(h) then (
+    assert x in h;
+    assert x in h[newL := ie.val];
+    true
+  ) else (
+    assert x == ie.val.l;
+    assert x in LocsE(ie);
+    assert x in h;
+    assert x in h[newL := ie.val];
+    true
+  )
+}
+
+function method EvalE(h: Heap, sig: Sigma, expr: Expr): (Heap, Sigma, Expr)
 requires !expr.V?;
 requires TypeCheckE(TypeSigma(sig), expr).Type?;
-ensures forall x :: x in EvalE(sig, expr).0 ==> x in sig && EvalE(sig, expr).0[x] == sig[x];
+requires HeapWellDefined(h);
+requires HeapDeclarationsE(h, sig, expr);
+ensures HeapWellDefined(EvalE(h, sig, expr).0);
+ensures HeapDeclarationsE(EvalE(h, sig, expr).0, EvalE(h, sig, expr).1, EvalE(h, sig, expr).2);
+ensures forall l :: l in h ==> l in EvalE(h, sig, expr).0;
+ensures forall x :: x in EvalE(h, sig, expr).1 ==> x in sig && EvalE(h, sig, expr).1[x] == sig[x];
 ensures TypeCheckE(TypeSigma(sig), expr) ==
-        TypeCheckE(TypeSigma(EvalE(sig, expr).0), EvalE(sig, expr).1);
+        TypeCheckE(TypeSigma(EvalE(h, sig, expr).1), EvalE(h, sig, expr).2);
 {
 
   ghost var g := TypeCheckE(TypeSigma(sig), expr);
@@ -985,62 +1118,122 @@ ensures TypeCheckE(TypeSigma(sig), expr) ==
         assert x !in TypeSigma(sig2);
         assert g.gamma == TypeSigma(sig2);
         assert g == TypeCheckE(TypeSigma(sig2), V(sig[x]));
-        (sig2, V(sig[x]))
+        assert HeapDeclarationsE(h, sig2, V(sig[x]));
+        (h, sig2, V(sig[x]))
       ) else (
         assert TypeCheckE(TypeSigma(sig), V(sig[x])).Type?;
         assert g == TypeCheckE(TypeSigma(sig), V(sig[x]));
-        (sig, V(sig[x]))
+        assert HeapDeclarationsE(h, sig, V(sig[x]));
+        (h, sig, V(sig[x]))
+      )
+    )
+
+    case Deref(re) => (
+      if !re.V? then (
+        assert TypeCheckE(TypeSigma(sig), re).Type?;
+        var (h2, sig2, re2) := EvalE(h, sig, re);
+        assert g == TypeCheckE(TypeSigma(sig2), Deref(re2));
+        assert HeapDeclarationsE(h2, sig2, Deref(re2));
+        (h2, sig2, Deref(re2))
+      ) else (
+        assert TypeCheckE(TypeSigma(sig), re).typ.RefT?;
+        assert TypeCheckE(TypeSigma(sig), re).typ.t == g.typ;
+        assert re.val.Ref?;
+        assert re.val.l in LocsE(expr);
+        assert re.val.l in h;
+        assert TypeCheckV(h[re.val.l]) == re.val.l.t;
+        assert g == TypeCheckE(TypeSigma(sig), V(h[re.val.l]));
+        assert HeapDeclarationsE(h, sig, V(h[re.val.l]));
+        (h, sig, V(h[re.val.l]))
+      )
+    )
+
+    case Alloc(ie) => (
+      if !ie.V? then (
+        assert TypeCheckE(TypeSigma(sig), ie).Type?;
+        var (h2, sig2, ie2) := EvalE(h, sig, ie);
+        assert g == TypeCheckE(TypeSigma(sig2), Alloc(ie2));
+        assert HeapDeclarationsE(h2, sig2, Alloc(ie2));
+        (h2, sig2, Alloc(ie2))
+      ) else (
+        var newL: Loc := Loc(|h|, TypeCheckV(ie.val));
+        assert g == TypeCheckE(TypeSigma(sig), V(Ref(newL)));
+        assert HeapDeclarationsE(h, sig, Alloc(ie));
+        assert forall x :: x in LocsH(h) ==> x in h[newL := ie.val];
+        assert forall x :: x in LocsE(V(ie.val)) ==> x in h;
+        assert forall x :: x in LocsE(V(ie.val)) ==> x in h[newL := ie.val];
+        assert forall x :: x in LocsH(h[newL := ie.val]) ==>
+                           HeapDeclarationsAlloc(h, ie, newL, x) &&
+                           x in h[newL := ie.val];
+        assert forall x :: x in LocsSig(sig) ==> x in h[newL := ie.val];
+        assert forall x :: x in LocsE(V(Ref(newL))) ==> x in h[newL := ie.val];
+        assert HeapDeclarationsE(h[newL := ie.val], sig, V(Ref(newL)));
+        (h[newL := ie.val], sig, V(Ref(newL)))
       )
     )
 
     case Add(l, r) =>
       if !l.V? then (
         assert TypeCheckE(TypeSigma(sig), l).Type?;
-        var (sig2, l2) := EvalE(sig, l);
+        var (h2, sig2, l2) := EvalE(h, sig, l);
         assert g == TypeCheckE(TypeSigma(sig2), Add(l2, r));
-        (sig2, Add(l2, r))
+        assert HeapDeclarationsE(h2, sig2, Add(l2, r));
+        (h2, sig2, Add(l2, r))
       ) else if !r.V? then (
-        var (sig2, r2) := EvalE(sig, r);
+        var (h2, sig2, r2) := EvalE(h, sig, r);
         assert g == TypeCheckE(TypeSigma(sig2), Add(l, r2));
-        (sig2, Add(l, r2))
+        assert HeapDeclarationsE(h2, sig2, Add(l, r2));
+        (h2, sig2, Add(l, r2))
       ) else (
         assert g == TypeCheckE(TypeSigma(sig), V(Num(l.val.nval + r.val.nval)));
-        (sig, V(Num(l.val.nval + r.val.nval)))
+        assert HeapDeclarationsE(h, sig, V(Num(l.val.nval + r.val.nval)));
+        (h, sig, V(Num(l.val.nval + r.val.nval)))
       )
 
     case GT(l, r) =>
       if !l.V? then (
         assert TypeCheckE(TypeSigma(sig), l).Type?;
-        var (sig2, l2) := EvalE(sig, l);
+        var (h2, sig2, l2) := EvalE(h, sig, l);
         assert g == TypeCheckE(TypeSigma(sig2), GT(l2, r));
-        (sig2, GT(l2, r))
+        assert HeapDeclarationsE(h2, sig2, GT(l2, r));
+        (h2, sig2, GT(l2, r))
       ) else if !r.V? then (
-        var (sig2, r2) := EvalE(sig, r);
+        var (h2, sig2, r2) := EvalE(h, sig, r);
         assert g == TypeCheckE(TypeSigma(sig2), GT(l, r2));
-        (sig2, GT(l, r2))
+        assert HeapDeclarationsE(h2, sig2, GT(l, r2));
+        (h2, sig2, GT(l, r2))
       ) else (
         assert g == TypeCheckE(TypeSigma(sig), V(Bool(l.val.nval > r.val.nval)));
-        (sig, V(Bool(l.val.nval > r.val.nval)))
+        assert HeapDeclarationsE(h, sig, V(Bool(l.val.nval > r.val.nval)));
+        (h, sig, V(Bool(l.val.nval > r.val.nval)))
       )
 
     case Eq(l, r) =>
       if !l.V? then (
-        var (sig2, l2) := EvalE(sig, l);
+        var (h2, sig2, l2) := EvalE(h, sig, l);
         assert g == TypeCheckE(TypeSigma(sig2), Eq(l2, r));
-        (sig2, Eq(l2, r))
+        assert HeapDeclarationsE(h2, sig2, Eq(l2, r));
+        (h2, sig2, Eq(l2, r))
       ) else if !r.V? then (
-        var (sig2, r2) := EvalE(sig, r);
+        var (h2, sig2, r2) := EvalE(h, sig, r);
         assert g == TypeCheckE(TypeSigma(sig2), Eq(l, r2));
-        (sig2, Eq(l, r2))
+        assert HeapDeclarationsE(h2, sig2, Eq(l, r2));
+        (h2, sig2, Eq(l, r2))
       ) else if l.val.Num? && r.val.Num? then (
         assert g == TypeCheckE(TypeSigma(sig), V(Bool(l.val.nval == r.val.nval)));
-        (sig, V(Bool(l.val.nval == r.val.nval)))
+        assert HeapDeclarationsE(h, sig, V(Bool(l.val.nval == r.val.nval)));
+        (h, sig, V(Bool(l.val.nval == r.val.nval)))
       ) else (
         assert g == TypeCheckE(TypeSigma(sig), V(Bool(l.val.bval == r.val.bval)));
-        (sig, V(Bool(l.val.bval == r.val.bval)))
+        assert HeapDeclarationsE(h, sig, V(Bool(l.val.bval == r.val.bval)));
+        (h, sig, V(Bool(l.val.bval == r.val.bval)))
       )
 
   }
+}
+
+predicate HeapDeclarationsS(h: Heap, sig: Sigma, s: Stmt) {
+  forall x :: x in LocsH(h) + LocsSig(sig) + LocsS(s) ==> x in h
 }
 
 predicate IfConversion1(g: Gamma, x: string, the: Stmt, els: Stmt)
@@ -1058,7 +1251,6 @@ ensures x in GammaWithoutMovedS(
   assert x !in ConsumedVarsS(the, 0);
   assert x !in ConsumedVarsS(els, 1);
   assert x !in ConsumedVarsS(els, 0);
-
 
   if MoveType(g[x]) then (
     assert x !in ReferencedVarsS(stmt);
@@ -1209,14 +1401,27 @@ ensures x in GammaWithoutMovedS(g, If(V(Bool(false)), the, els));
   )
 }
 
-function method EvalS(sig: Sigma, stmt: Stmt): (Sigma, Stmt)
+predicate LocsWhile(cond: Expr, body: Stmt, x: Loc)
+requires x in LocsS(If(cond, Seq(If(V(Bool(true)), body, Skip), While(cond, body)), Skip));
+ensures x in LocsS(While(cond, body));
+{
+  assert x in LocsE(cond) + LocsS(body);
+  true
+}
+
+function method EvalS(h: Heap, sig: Sigma, stmt: Stmt): (Heap, Sigma, Stmt)
 decreases stmt;
 requires !stmt.Skip?;
 requires TypeCheckS(TypeSigma(sig), stmt).Some?;
-ensures forall x :: x in EvalS(sig, stmt).0 ==> x in sig || x in DeclaredVars(stmt);
-ensures forall x :: x in DeclaredVars(EvalS(sig, stmt).1) ==> x in DeclaredVars(stmt);
+requires HeapWellDefined(h);
+requires HeapDeclarationsS(h, sig, stmt);
+ensures HeapWellDefined(EvalS(h, sig, stmt).0);
+ensures HeapDeclarationsS(EvalS(h, sig, stmt).0, EvalS(h, sig, stmt).1, EvalS(h, sig, stmt).2);
+ensures forall l :: l in h ==> l in EvalS(h, sig, stmt).0;
+ensures forall x :: x in EvalS(h, sig, stmt).1 ==> x in sig || x in DeclaredVars(stmt);
+ensures forall x :: x in DeclaredVars(EvalS(h, sig, stmt).2) ==> x in DeclaredVars(stmt);
 ensures TypeCheckS(TypeSigma(sig), stmt) ==
-        TypeCheckS(TypeSigma(EvalS(sig, stmt).0), EvalS(sig, stmt).1);
+        TypeCheckS(TypeSigma(EvalS(h, sig, stmt).1), EvalS(h, sig, stmt).2);
 {
   ghost var g := TypeCheckS(TypeSigma(sig), stmt).val;
 
@@ -1224,7 +1429,7 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
 
     case VarDecl(x, vt, vinit) =>
       if !vinit.V? then (
-        var (sig2, vinit2) := EvalE(sig, vinit);
+        var (h2, sig2, vinit2) := EvalE(h, sig, vinit);
         ghost var vet := TypeCheckE(TypeSigma(sig2), vinit2);
         assert vet.Type?;
         assert vet.typ == TypeCheckE(TypeSigma(sig), vinit).typ;
@@ -1238,47 +1443,51 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         assert g2.Some?;
         assert g == g2.val;
         assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
-        (sig2, VarDecl(x, vt, vinit2))
+        assert HeapDeclarationsS(h2, sig2, VarDecl(x, vt, vinit2));
+        (h2, sig2, VarDecl(x, vt, vinit2))
       ) else (
         ghost var g2 := TypeCheckS(TypeSigma(sig[x := vinit.val]), Skip);
         assert g2.Some?;
         assert g == g2.val;
         assert forall z :: z in sig[x := vinit.val] ==> z in sig || z in DeclaredVars(stmt);
-        (sig[x := vinit.val], Skip)
+        assert HeapDeclarationsS(h, sig[x := vinit.val], Skip);
+        (h, sig[x := vinit.val], Skip)
       )
 
     case Assign(y, expr) =>
       if !expr.V? then (
-        var (sig2, expr2) := EvalE(sig, expr);
+        var (h2, sig2, expr2) := EvalE(h, sig, expr);
         ghost var vet := TypeCheckE(TypeSigma(sig2), expr2);
         assert vet.Type?;
         assert vet.typ == TypeCheckE(TypeSigma(sig), expr).typ;
         assert vet.gamma == TypeCheckE(TypeSigma(sig), expr).gamma;
         assert stmt.y in TypeSigma(sig);
-        /* assert stmt.y in TypeSigma(sig2); */
         assert TypeSigma(sig)[y] == vet.typ;
         assert TypeSigma(sig2)[y] == vet.typ;
         ghost var g2 := TypeCheckS(TypeSigma(sig2), Assign(y, expr2));
         assert g2.Some?;
         assert g == g2.val;
         assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
-        (sig2, Assign(y, expr2))
+        assert HeapDeclarationsS(h2, sig2, Assign(y, expr2));
+        (h2, sig2, Assign(y, expr2))
       ) else (
         ghost var g2 := TypeCheckS(TypeSigma(sig[y := expr.val]), Skip);
         assert g2.Some?;
         assert g == g2.val;
         assert forall z :: z in sig[y := expr.val] ==> z in sig || z in DeclaredVars(stmt);
-        (sig[y := expr.val], Skip)
+        assert HeapDeclarationsS(h, sig[y := expr.val], Skip);
+        (h, sig[y := expr.val], Skip)
       )
 
     case If(cond, the, els) =>
       if !cond.V? then (
-        var (sig2, cond2) := EvalE(sig, cond);
+        var (h2, sig2, cond2) := EvalE(h, sig, cond);
         ghost var g2 := TypeCheckS(TypeSigma(sig2), If(cond2, the, els));
         assert g2.Some?;
         assert g == g2.val;
         assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
-        (sig2, If(cond2, the, els))
+        assert HeapDeclarationsS(h2, sig2, If(cond2, the, els));
+        (h2, sig2, If(cond2, the, els))
       ) else if cond.val.bval then (
         ghost var gs := TypeSigma(sig);
         assert g == GammaWithoutMovedS(gs, If(V(Bool(true)), the, els));
@@ -1300,7 +1509,8 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         assert forall x :: x in g2.val ==> IfConversion2(gs, x, the, els) && x in g;
 
         assert g == g2.val;
-        (sig, Seq(the, CleanUp(TypeSigma(sig), els, the)))
+        assert HeapDeclarationsS(h, sig, Seq(the, CleanUp(TypeSigma(sig), els, the)));
+        (h, sig, Seq(the, CleanUp(TypeSigma(sig), els, the)))
 
       ) else (
         ghost var gs := TypeSigma(sig);
@@ -1323,7 +1533,8 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         assert forall x :: x in g2.val ==> IfConversionE2(gs, x, the, els) && x in g;
 
         assert g == g2.val;
-        (sig, Seq(els, CleanUp(TypeSigma(sig), the, els)))
+        assert HeapDeclarationsS(h, sig, Seq(els, CleanUp(TypeSigma(sig), the, els)));
+        (h, sig, Seq(els, CleanUp(TypeSigma(sig), the, els)))
       )
 
     case While(cond, body) => (
@@ -1388,7 +1599,18 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
                Seq(If(V(Bool(true)), body, Skip),
                    While(cond, body)),
                Skip));
-      (sig, If(cond,
+      assert HeapDeclarationsS(h, sig, While(cond, body));
+      assert forall x :: x in LocsH(h) + LocsSig(sig) + LocsS(While(cond, body)) ==> x in h;
+      assert forall x :: x in LocsH(h) ==> x in h;
+      assert forall x :: x in LocsSig(sig) ==> x in h;
+      assert forall x :: x in LocsS(While(cond, body)) ==> x in h;
+      assert forall x :: x in LocsS(If(cond, Seq(If(V(Bool(true)), body, Skip), While(cond, body)), Skip)) ==> LocsWhile(cond, body, x) && x in LocsS(While(cond, body)) && x in h;
+      assert forall x :: x in LocsH(h) + LocsSig(sig) + LocsS(If(cond, Seq(If(V(Bool(true)), body, Skip), While(cond, body)), Skip)) ==> x in h;
+      assert HeapDeclarationsS(h, sig, If(cond,
+               Seq(If(V(Bool(true)), body, Skip),
+                   While(cond, body)),
+               Skip));
+      (h, sig, If(cond,
                Seq(If(V(Bool(true)), body, Skip),
                    While(cond, body)),
                Skip))
@@ -1399,16 +1621,18 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
       assert g2.Some?;
       assert g == g2.val;
       assert forall x :: x in SigmaWithoutMovedS(sig, stmt) ==> x in sig || x in DeclaredVars(stmt);
-      (SigmaWithoutMovedS(sig, stmt), Skip)
+      assert HeapDeclarationsS(h, SigmaWithoutMovedS(sig, stmt), Skip);
+      (h, SigmaWithoutMovedS(sig, stmt), Skip)
     )
 
     case Seq(s1, s2) =>
       if s1.Skip? then (
         ghost var g2 := TypeCheckS(TypeSigma(sig), s2);
         assert g2.Some?;
-        (sig, s2)
+        assert HeapDeclarationsS(h, sig, s2);
+        (h, sig, s2)
       ) else (
-        var (sig2, s12) := EvalS(sig, s1);
+        var (h2, sig2, s12) := EvalS(h, sig, s1);
         assert TypeCheckS(TypeSigma(sig), s1).Some?;
         ghost var g2 := TypeCheckS(TypeSigma(sig), s1).val;
         assert TypeCheckS(g2, s2).Some?;
@@ -1424,7 +1648,8 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         assert g4.Some?;
         assert g == g4.val;
         assert forall x :: x in sig2 ==> x in sig || x in DeclaredVars(stmt);
-        (sig2, Seq(s12, s2))
+        assert HeapDeclarationsS(h2, sig2, Seq(s12, s2));
+        (h2, sig2, Seq(s12, s2))
       )
 
   }
@@ -1492,14 +1717,18 @@ method Main() {
   }
   print "Type checking succesful.\nEvaluating...\n";
   var n:nat := 0;
+  var h: Heap := map[];
   var env: Sigma := map[];
   var s: Stmt := prog.val;
   while n < 100000 && !s.Skip?
   invariant TypeCheckS(TypeSigma(env), s).Some?;
+  invariant HeapWellDefined(h);
+  invariant HeapDeclarationsS(h, env, s);
   {
-    var res := EvalS(env, s);
-    env := res.0;
-    s := res.1;
+    var res := EvalS(h, env, s);
+    h := res.0;
+    env := res.1;
+    s := res.2;
     n := n + 1;
   }
   print "Ran ";
