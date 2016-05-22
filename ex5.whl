@@ -1,0 +1,4 @@
+var q: Ref[Num] = ref(0);
+*q = 23;
+var s: Share[Num] = share(q);
+var n: Num = *(s) + *(s);
