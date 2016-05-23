@@ -26,3 +26,6 @@ test: while.exe whileref.exe whilesha.exe consha.exe
 	mono consha.exe ex7b.csh
 	mono consha.exe ex7c.csh
 	mono consha.exe ex7d.csh
+	mono consha.exe ex8ww.csh
+	mono consha.exe ex8wr.csh
+	mono consha.exe ex8rw.csh

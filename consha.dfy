@@ -813,7 +813,26 @@ decreases stmt, n;
                                        + ConsumedVarsS(refs, 1)
     case While(con, body) => ConsumedVarsS(body, 1)
     case Seq(s1, s2) => ConsumedVarsS(s1, 1) + ConsumedVarsS(s2, 1)
-    case Fork(s) => ConsumedVarsS(s, 1)
+    case Fork(s) => ConsumedVarsS(s, 1) + UpdatedVarsS(s)
+    case Skip => {}
+  }
+}
+
+function method UpdatedVarsS(stmt: Stmt): set<string>
+decreases stmt;
+{
+  match stmt {
+    case VarDecl(x, vtype, vinit) => {}
+    case Assign(y, expr) => {}
+    case RefAssign(z, expr) => {z}
+    case Send(ch, expr) => {}
+    case If(con, the, els) => UpdatedVarsS(the) + UpdatedVarsS(els)
+    case CleanUp(g, refs, decls) => {}
+    case While(con, body) => UpdatedVarsS(body)
+    case Seq(s1, s2) =>
+      UpdatedVarsS(s1) +
+      (set x | x in UpdatedVarsS(s2) && x !in ScopedVars(s1) :: x)
+    case Fork(s) => UpdatedVarsS(s)
     case Skip => {}
   }
 }
@@ -830,6 +849,12 @@ decreases stmt;
 {
   map x | x in g && !(x in ReferencedVarsSDec(stmt, 0) && MoveType(g[x]))
                  && !(x in ConsumedVarsS(stmt, 0)):: g[x]
+}
+
+function method GammaWithoutUpdatedS(g: Gamma, stmt: Stmt): Gamma
+ensures GammaExtends(GammaWithoutUpdatedS(g, stmt), g);
+{
+  map x | x in g && x !in UpdatedVarsS(stmt):: g[x]
 }
 
 predicate GammaWithoutMovedSeqDistributionStr1(g: Gamma, s1: Stmt, s2: Stmt, x: string)
@@ -1315,13 +1340,14 @@ ensures TypeCheckS(g, stmt).Some? && stmt.Skip? ==> g == TypeCheckS(g, stmt).val
             GammaJoin(g, GammaUnion(GammaWithoutMovedS(g, s), ScopedVars(s)));
           assert GammaJoin(g, g2) == GammaWithoutMovedS(g, s);
           assert ReferencedVarsSDec(s, 0) == ReferencedVarsSDec(stmt, 0);
-          assert ConsumedVarsS(s, 0) == ConsumedVarsS(stmt, 0);
-          assert GammaWithoutMovedS(g, s) == GammaWithoutMovedS(g, stmt);
-          assert GammaJoin(g, g2) == GammaWithoutMovedS(g, stmt);
+          assert ConsumedVarsS(s, 0) + UpdatedVarsS(s) == ConsumedVarsS(stmt, 0);
+          assert GammaWithoutUpdatedS(GammaWithoutMovedS(g, s), s) == GammaWithoutMovedS(g, stmt);
+          assert GammaWithoutUpdatedS(GammaJoin(g, g2), s) == GammaWithoutMovedS(g, stmt);
           assert ScopedVars(stmt) == map[];
-          assert GammaJoin(g, g2) ==
+          assert GammaWithoutUpdatedS(GammaJoin(g, g2), s) ==
             GammaUnion(GammaWithoutMovedS(g, stmt), ScopedVars(stmt));
-          Some(GammaJoin(g, g2)))
+          Some(GammaWithoutUpdatedS(GammaJoin(g, g2), s))
+        )
         case None => None
       }
 
@@ -1908,7 +1934,7 @@ ensures TypeCheckS(TypeSigma(sig), stmt) ==
         TypeCheckS(TypeSigma(EvalS(c, h, sig, stmt).2), EvalS(c, h, sig, stmt).3);
 ensures EvalS(c, h, sig, stmt).4.Some? ==>
         TypeCheckS(TypeSigma(sig), EvalS(c, h, sig, stmt).4.val).Some? &&
-        HeapDeclarationsS(EvalS(c, h, sig, stmt).0, EvalS(c, h, sig, stmt).1, sig, EvalS(c, h, sig, stmt).4.val) &&
+        HeapDeclarationsS(c, h, sig, EvalS(c, h, sig, stmt).4.val) &&
         !EvalS(c, h, sig, stmt).4.val.Skip?;
 {
   ghost var g := TypeCheckS(TypeSigma(sig), stmt).val;
@@ -2196,17 +2222,17 @@ ensures EvalS(c, h, sig, stmt).4.Some? ==>
         assert g == g2.val;
         (c, h, sig, Skip, None)
       ) else (
-        ghost var g2 := TypeCheckS(TypeSigma(SigmaWithoutMovedS(sig, s)), Skip);
+        ghost var g2 := TypeCheckS(TypeSigma(SigmaWithoutMovedS(sig, stmt)), Skip);
         assert g2.Some?;
-        assert g2.val == TypeSigma(SigmaWithoutMovedS(sig, s));
-        assert g2.val == GammaWithoutMovedS(TypeSigma(sig), s);
+        assert g2.val == TypeSigma(SigmaWithoutMovedS(sig, stmt));
+        assert g2.val == GammaWithoutMovedS(TypeSigma(sig), stmt);
         assert g == g2.val;
         assert HeapDeclarationsS(c, h, sig, Fork(s));
         assert forall l :: l in LocsS(Fork(s)) ==> l in h;
         assert LocsS(Fork(s)) == LocsS(s);
         assert forall l :: l in LocsS(s) ==> l in h;
         assert HeapDeclarationsS(c, h, sig, s);
-        (c, h, SigmaWithoutMovedS(sig, s), Skip, Some(s))
+        (c, h, SigmaWithoutMovedS(sig, stmt), Skip, Some(s))
       )
 
     case Seq(s1, s2) =>
@@ -2243,9 +2269,10 @@ type Thread = (Sigma, Stmt)
 type Threads = seq<Thread>
 
 predicate HeapDeclarationsP(c: Channels, h: Heap, threads: Threads) {
-  var slocs := (set t, l | t in threads && l in LocsSig(t.0) :: l);
-  var tlocs := (set t, l | t in threads && l in LocsS(t.1) :: l);
-  forall l :: l in LocsCh(c) + LocsH(h) + slocs + tlocs ==> l in h
+  /* var slocs := (set t, l | t in threads && l in LocsSig(t.0) :: l); */
+  /* var tlocs := (set t, l | t in threads && l in LocsS(t.1) :: l); */
+  /* forall l :: l in LocsCh(c) + LocsH(h) + slocs + tlocs ==> l in h */
+  forall t :: t in threads ==> HeapDeclarationsS(c, h, t.0, t.1)
 }
 
 function method EvalP(c: Channels, h: Heap, threads: Threads): (Channels, Heap, Threads)
@@ -2265,7 +2292,123 @@ ensures forall t :: t in EvalP(c, h, threads).2 ==> !t.1.Skip?;
   var step := EvalS(c, h, t.0, t.1);
   var newT := if step.3.Skip? then [] else [(step.2, step.3)];
   var spawnT := if step.4.None? then [] else [(t.0, step.4.val)];
+  assert HeapDeclarationsS(step.0, step.1, step.2, step.3);
+  assert step.4.Some? ==> HeapDeclarationsS(step.0, step.1, step.2, step.4.val);
   (step.0, step.1, others + newT + spawnT)
+}
+
+// --------- No Data Races ---------
+
+lemma WriteReq(g: Gamma, s: Stmt, x: string)
+decreases s;
+requires x in UpdatedVarsS(s);
+requires TypeCheckS(g, s).Some?;
+ensures x in g;
+ensures g[x].RefT?;
+{
+  assert !s.VarDecl?;
+  assert !s.Assign?;
+  assert !s.Send?;
+  assert !s.CleanUp?;
+  assert !s.Skip?;
+  match s {
+    case RefAssign(z, expr) => {
+      assert x == z;
+      assert x in TypeCheckE(g, expr).gamma;
+      assert TypeCheckE(g, expr).gamma[x].RefT?;
+      assert x in g;
+      assert g[x].RefT?;
+    }
+    case If(con, the, els) => {
+      if x in UpdatedVarsS(the) {
+        WriteReq(TypeCheckE(g, con).gamma, the, x);
+      } else {
+        WriteReq(TypeCheckE(g, con).gamma, els, x);
+      }
+      assert x in g;
+      assert g[x].RefT?;
+    }
+    case While(con, body) => {
+      WriteReq(TypeCheckE(g, con).gamma, body, x);
+      assert x in g;
+      assert g[x].RefT?;
+    }
+    case Seq(s1, s2) => {
+      if x in UpdatedVarsS(s1) {
+        WriteReq(g, s1, x);
+      } else {
+        WriteReq(TypeCheckS(g, s1).val, s2, x);
+      }
+      assert x in g;
+      assert g[x].RefT?;
+    }
+    case Fork(s) => {
+      WriteReq(g, s, x);
+      assert x in g;
+      assert g[x].RefT?;
+    }
+  }
+}
+
+lemma WriteReqContra(g: Gamma, s: Stmt, x: string)
+requires x !in g || !g[x].RefT?;
+ensures x !in UpdatedVarsS(s) || !TypeCheckS(g, s).Some?;
+{
+  if x in UpdatedVarsS(s) && TypeCheckS(g, s).Some? {
+    WriteReq(g, s, x);
+    assert false;
+  }
+}
+
+lemma NoReadWriteRaces(g: Gamma, s1: Stmt, s2: Stmt, x: string)
+requires x in ReferencedVarsS(s1);
+requires TypeCheckS(g, Seq(Fork(s1), s2)).Some?;
+ensures x !in UpdatedVarsS(s2);
+{
+  assert TypeCheckS(g, Fork(s1)).Some?;
+  assert TypeCheckS(g, s1).Some?;
+  ghost var g2 := GammaWithoutMovedS(g, Fork(s1));
+  assert g2 == TypeCheckS(g, Fork(s1)).val;
+  assert TypeCheckS(g2, s2).Some?;
+  assert x in g;
+  assert x in ReferencedVarsS(s1);
+  if g[x].RefT? {
+    assert x !in g2;
+    WriteReqContra(g2, s2, x);
+    assert x !in UpdatedVarsS(s2);
+  } else {
+    WriteReqContra(g2, s2, x);
+    assert x !in UpdatedVarsS(s2);
+  }
+}
+
+lemma NoWriteReadRaces(g: Gamma, s1: Stmt, s2: Stmt, x: string)
+requires x in UpdatedVarsS(s1);
+requires TypeCheckS(g, Seq(Fork(s1), s2)).Some?;
+ensures x !in ReferencedVarsS(s2);
+{
+  assert TypeCheckS(g, Fork(s1)).Some?;
+  assert TypeCheckS(g, s1).Some?;
+  ghost var g2 := GammaWithoutMovedS(g, Fork(s1));
+  assert g2 == TypeCheckS(g, Fork(s1)).val;
+  assert TypeCheckS(g2, s2).Some?;
+  assert x in ConsumedVarsS(Fork(s1), 0);
+  assert x !in g2;
+}
+
+lemma NoWriteWriteRaces(g: Gamma, s1: Stmt, s2: Stmt, x: string)
+requires x in UpdatedVarsS(s1);
+requires TypeCheckS(g, Seq(Fork(s1), s2)).Some?;
+ensures x !in UpdatedVarsS(s2);
+{
+  assert TypeCheckS(g, Fork(s1)).Some?;
+  assert TypeCheckS(g, s1).Some?;
+  ghost var g2 := GammaWithoutMovedS(g, Fork(s1));
+  assert g2 == TypeCheckS(g, Fork(s1)).val;
+  assert TypeCheckS(g2, s2).Some?;
+  assert x in ConsumedVarsS(Fork(s1), 0);
+  assert x !in g2;
+  WriteReqContra(g2, s2, x);
 }
 
 // --------- Testing ---------
@@ -2329,3 +2472,4 @@ method Main() {
   print c;
   print "\n";
 }
+

@@ -20,6 +20,6 @@ send(1, 24);
 send(1, 1);
 
 // write incr:
-*incr = 2;
+// *incr = 2;
 
 var result: Ref[Num] = ref(receive(2, Num));
