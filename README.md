@@ -1,9 +1,9 @@
 Consha
 ======
 
-Minimal imperative programming language with typed references, channels and concurrency. A simple, linear type system enables move-semantics for references and data race freedom.
+Minimal imperative programming language with typed references, channels and concurrency. A simple, linear type system enables move-semantics for references and absence of data races.
 
-The language is a research prototype inspired by [Rust](https://www.rust-lang.org/) and used for static analysis of concurrent programs, especially absence of data races with an owner-shop based type system.
+The language is a research prototype inspired by [Rust](https://www.rust-lang.org/) and used for static analysis of concurrent programs, especially absence of data races with an ownership-based type system.
 
 Verified Properties
 -------------------
@@ -59,15 +59,15 @@ previous variable from the scope
 
 `x = expr;` - assigns a new value to the variable `x` in scope.
 
-`*x = expr;` - if `x` is a memory reference, updated the allocated memory with a new value.
+`*x = expr;` - if `x` is a memory reference, updates the allocated memory with a new value.
 
-`send(expr: Num, expr: T)` - sends a value of the inferred type to the channel with the numeric identifier; this statement is non-blocking and will buffer values
+`send(expr: Num, expr: T)` - sends a value of the inferred type to the channel with the numeric identifier (this statement is non-blocking and will buffer values)
 
-`if (expr: Bool) { statements ... } else { statements ... }` - evaluate conditional expression and then the corresponding branch.
+`if (expr: Bool) { statements ... } else { statements ... }` - evaluate conditional expression and continue execution with the corresponding branch
 
-`while(expr: Bool) { statements ... }` - if the conditional expression evaluates to true, execute body and repeat until it becomes value.
+`while(expr: Bool) { statements ... }` - if the conditional expression evaluates to true, execute body and repeat until it becomes value
 
-`fork { statements ... }` - spawns a new thread which has access to all variables in the outer scope
+`fork { statements ... }` - spawns a new thread which has access to all variables in the outer scope (round-robin scheduling with a single operating system thread)
 
 Example Programs
 ----------------
