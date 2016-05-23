@@ -8,7 +8,7 @@ The language is a research prototype inspired by [Rust](https://www.rust-lang.or
 Verified Properties
 -------------------
 
-The langauge implementation includes a parser, type checker and interpreter. Everything is written in [Dafny](http://dafny.codeplex.com/) and the source code includes proofs of progress, preservation and absence of data races.
+The language implementation includes a parser, type checker and interpreter. Everything is written in [Dafny](http://dafny.codeplex.com/) and the source code includes proofs of progress, preservation and absence of data races.
 
 *Progress*: If program is typed and not finished, it can perform a step in the execution.
 
@@ -45,7 +45,7 @@ previous variable from the scope
 
 `copy(expr: Share[T]) : Ref[T]` - convert an immutable reference to a (non-aliased) mutable reference
 
-`(expr: Num + expr: Num) : Num` - add to integer expressions 
+`(expr: Num + expr: Num) : Num` - add to integer expressions
 
 `(expr: T == expr: T) : Bool` - test equality of two integer or boolean expressions
 
@@ -55,7 +55,7 @@ previous variable from the scope
 
 ### Statements
 
-`var x: Type := expr;` - declare new variable of the declared type and initialize with expr.
+`var x: Type := expr;` - declare new variable of the declared type and initialize with `expr`.
 
 `x = expr;` - assigns a new value to the variable `x` in scope.
 
@@ -105,7 +105,7 @@ send(1, 24);
 send(1, 1);
 
 // *incr = 2;  // <-- this write is would cause a data race
-               //     and is not alllowed by the type system
+               //     and is not allowed by the type system
 
 var result: Ref[Num] = ref(receive(2, Num));
 ```
