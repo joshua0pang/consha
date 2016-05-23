@@ -104,7 +104,8 @@ send(1, 4);
 send(1, 24);
 send(1, 1);
 
-// *incr = 2;  // <-- this write is not allows by the type system
+// *incr = 2;  // <-- this write is would cause a data race
+               //     and is not alllowed by the type system
 
 var result: Ref[Num] = ref(receive(2, Num));
 ```
