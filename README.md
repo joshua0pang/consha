@@ -21,53 +21,40 @@ Language Reference
 
 ### Types
 
-`Num` - integer
+Type | Description
+-----|------------
+`Num` | integer
+`Bool` | boolean
+`Ref[Type]` | a mutable reference to a heap allocated variable of type Type. Variable references to this type have move semantics and therefore remove the previous variable from the scope
+`Share[Type]` | an immutable reference to a heap allocated variable of type `Type`
 
-`Bool` - boolean
-
-`Ref[Type]` - a mutable reference to a heap allocated variable of type Type.
-Variable references to this type have move semantics and therefore remove the
-previous variable from the scope
-
-`Share[Type]` - an immutable reference to a heap allocated variable of type Type
 
 ### Expressions
 
-`[num] : Num` - literal integer
-
-`true`/`false : Bool` - boolean literals
-
-`*(expr : Ref[T]) : T` - dereference the mutable or immutable reference computed by `expr`
-
-`ref(expr: T) : Ref[T]` - allocate a new reference with the initial value denoted by `expr`
-
-`share(expr: Ref[T]) : Share[T]` - convert a mutable reference to an immutable reference
-
-`copy(expr: Share[T]) : Ref[T]` - convert an immutable reference to a (non-aliased) mutable reference
-
-`(expr: Num + expr: Num) : Num` - add to integer expressions
-
-`(expr: T == expr: T) : Bool` - test equality of two integer or boolean expressions
-
-`(expr: Num > expr: Num) : Bool` - test whether the first integer expression is greater than the second integer expressions
-
-`receive(expr: Num, Type)` - receive a value of the declared type from the channel with the numeric identifier denoted by `expr`; if there is no such value in the buffer, this expression blocks until the value is available
+Syntax | Types | Description
+-------|-------|------------
+`[num]` | `Num` | literal integer
+`true`, `false`| `Bool` | boolean literals
+`*(expr)` | `Ref[T] -> T` | dereference the mutable or immutable reference computed by `expr`
+`ref(expr)` | `T -> Ref[T]` | allocate a new reference with the initial value denoted by `expr`
+`share(expr)` | `Ref[T]->Share[T]` | convert a mutable reference to an immutable reference
+`copy(expr)` | `Share[T]->Ref[T]` | convert an immutable reference to a (non-aliased) mutable reference
+`expr + expr` | `Num × Num -> Num` | add to integer expressions
+`expr == expr` | `T × T -> Bool` | test equality of two integer or boolean expressions
+`expr > expr` | `Num × Num ->Bool` | test whether the first integer expression is greater than the second integer expressions
+`receive(expr,type)` | `Num × Type -> T` | receive a value of the declared type from the channel with the numeric identifier denoted by `expr`; if there is no such value in the buffer, this expression blocks until the value is available
 
 ### Statements
 
-`var x: Type := expr;` - declare new variable of the declared type and initialize with `expr`.
-
-`x = expr;` - assigns a new value to the variable `x` in scope.
-
-`*x = expr;` - if `x` is a memory reference, updates the allocated memory with a new value.
-
-`send(expr: Num, expr: T)` - sends a value of the inferred type to the channel with the numeric identifier (this statement is non-blocking and will buffer values)
-
-`if (expr: Bool) { statements ... } else { statements ... }` - evaluate conditional expression and continue execution with the corresponding branch
-
-`while(expr: Bool) { statements ... }` - if the conditional expression evaluates to true, execute body and repeat until it becomes value
-
-`fork { statements ... }` - spawns a new thread which has access to all variables in the outer scope (round-robin scheduling with a single operating system thread)
+Syntax | Type Contraints | Description
+-------|-----------------|------------
+`var x: type := expr;` | `expr: type` | declare new variable of the declared type and initialize with `expr`.
+`x = expr;` | `x:T`, `expr:T` | assigns a new value to the variable `x` in scope.
+`*x = expr;` | `x:Ref[T]`, `expr:T`   | if `x` is a memory reference, updates the allocated memory with a new value.
+`send(expr1, expr2);` | `expr1:Num`, `expr2:T` | sends a value of the inferred type to the channel with the numeric identifier (this statement is non-blocking and will buffer values)
+`if (expr) { statements... } else { statements... }` | `expr:Bool` | evaluate conditional expression and continue execution with the corresponding branch
+`while (expr) {statements...}` | `expr:Bool` | if the conditional expression evaluates to true, execute body and repeat until it becomes value
+`fork { statements... }` | | spawns a new thread which has access to all variables in the outer scope (round-robin scheduling with a single operating system thread)
 
 Example Programs
 ----------------
