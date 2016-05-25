@@ -91,8 +91,8 @@ send(1, 4);
 send(1, 24);
 send(1, 1);
 
-// *incr = 2;  // <-- this write is would cause a data race
-               //     and is not allowed by the type system
+// *incr = 2;  // <-- this write would cause a data race which
+               //     will be detected by the type checher
 
 var result: Ref[Num] = ref(receive(2, Num));
 ```
